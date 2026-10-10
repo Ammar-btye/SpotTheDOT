@@ -94,7 +94,9 @@ measured Phase 2 run has been recorded yet.
 Exit codes: 0 means the run completed, including runs where the model failed (failures are counted and fall back
 to the checked template). 1 means the dataset was rejected: unreadable, empty, missing its manifest, changed,
 leaking, holdout, future evidence or a bad reference. Rejection happens before any model call or output write.
-2 means a usage error. `--limit N --seed S` takes a seeded smoke sample.
+2 means a usage error. 3 means the run failed after the dataset was accepted (runner setup, such as few-shot
+loading, or an error mid-run); stderr names the stage and the error class only, and no output is written.
+`--limit N --seed S` takes a seeded smoke sample.
 
 **Paths.** `llm` means the first attempt was accepted, and `retry` means the second was. `fallback` means both
 attempts failed, or the deadline ran out, and the checked template was used. It is labelled `model=template` and

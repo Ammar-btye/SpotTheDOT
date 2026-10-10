@@ -10,8 +10,11 @@ From amd/system2 (no GPU or network needed for the template runner):
 Writes <out-dir>/cases.jsonl (one record per runner x case), report.md and metrics.json (written last; its presence
 means the run completed). Exit 0 = run completed, including model failures, which are counted and fall back to the
 checked template; 1 = dataset rejected (unreadable, empty, missing manifest, changed, leaking, holdout or future
-evidence, malformed reference), before any model call or output write; 2 = usage error. The dataset defaults to the
-approved training packets in data/dev_packets.json; results there are development numbers, never headline numbers.
+evidence, malformed reference), before any model call or output write; 2 = usage error; 3 = the run failed after the
+dataset was accepted (runner setup such as few-shot loading, or an error mid-run such as a packet-identity mismatch
+or an unavailable entity catalog): the error class is printed, no capture content, and no output is written. The
+dataset defaults to the approved training packets in data/dev_packets.json; results there are development numbers,
+never headline numbers.
 """
 import argparse
 from pathlib import Path
@@ -57,16 +60,24 @@ def main(argv=None):
                         model=args.model if wants_model else None, label=args.label)
     try:
         dataset = load_eval_dataset(args.dataset)
-        runners = [TemplateRunner()] if args.runner in ('template', 'both') else []
-        if wants_model:
-            runners.append(ModelRunner(LlamaGenerator(args.model_url, model=args.model, max_tokens=args.max_tokens,
-                                                      timeout_s=args.timeout_s)))
-        metrics = run_evaluation(dataset, runners, config)
     except ValueError:
         # Deliberately generic: rejected captures must not be echoed into logs.
         print('Evaluation dataset rejected: invalid provenance, leakage, manifest, reference or packet identity.',
               file=sys.stderr)
         return 1
+    stage = 'runner setup'
+    try:
+        runners = [TemplateRunner()] if args.runner in ('template', 'both') else []
+        if wants_model:
+            runners.append(ModelRunner(LlamaGenerator(args.model_url, model=args.model, max_tokens=args.max_tokens,
+                                                      timeout_s=args.timeout_s)))
+        stage = 'evaluation run'
+        metrics = run_evaluation(dataset, runners, config)
+    except ValueError as exc:
+        # Class name only (a pydantic message can quote packet content); nothing is written for a failed run.
+        print('Evaluation failed during %s (dataset was accepted): %s. No results written.'
+              % (stage, type(exc).__name__), file=sys.stderr)
+        return 3
     write_artifacts(out_dir, metrics)
     if not args.quiet:
         print(report({k: v for k, v in metrics.items() if k != 'records'}))

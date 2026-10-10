@@ -488,6 +488,29 @@ def test_partial_write_never_leaves_stale_metrics_beside_new_artifacts(tmp_path,
     assert not [p for p in out.iterdir() if p.name.endswith('.tmp')]
 
 
+@pytest.mark.parametrize('stage', ['runner setup', 'evaluation run'])
+def test_post_dataset_failures_are_not_reported_as_dataset_rejection(tmp_path, monkeypatch, capsys, stage):
+    """Errors after the dataset passed get their own exit code and class name, never 'dataset rejected'."""
+    spec = importlib.util.spec_from_file_location('evaluate_cli', SCRIPT)
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+
+    def boom(*args, **kwargs):
+        raise ValueError('runner rnr saw a different packet for SECRET-CAPTURE-CONTENT')
+
+    if stage == 'runner setup':
+        monkeypatch.setattr(cli, 'LlamaGenerator', boom)
+        argv = ['--runner', 'model', '--model-url', 'http://127.0.0.1:9', '--model', 'qwen-fake']
+    else:
+        monkeypatch.setattr(cli, 'run_evaluation', boom)
+        argv = ['--runner', 'template']
+    out = tmp_path / 'out'
+    assert cli.main(argv + ['--out-dir', str(out), '--quiet']) == 3
+    err = capsys.readouterr().err
+    assert 'dataset rejected' not in err and stage in err and 'ValueError' in err
+    assert 'SECRET-CAPTURE-CONTENT' not in err and not out.exists()
+
+
 def test_model_runner_without_url_is_a_usage_error(tmp_path):
     r = evaluate('--runner', 'model', '--model', 'qwen-fake', '--out-dir', str(tmp_path / 'out'))
     assert r.returncode == 2 and not (tmp_path / 'out').exists()
