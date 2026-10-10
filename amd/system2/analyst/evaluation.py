@@ -526,19 +526,24 @@ def report(metrics: dict) -> str:
 
 
 def write_artifacts(out_dir: Path, metrics: dict) -> None:
-    """Serialize everything first, then atomically replace cases.jsonl, report.md and (last) metrics.json.
-
-    Any previous metrics.json is removed before the first replacement, so its presence always means all three files
-    come from the same completed run, even when a later write fails (disk full, permissions).
-    """
+    """Serialize everything first, then atomically replace cases.jsonl, report.md and (last) metrics.json."""
     records = metrics['records']
     summary = {k: v for k, v in metrics.items() if k != 'records'}
-    payloads = [
+    publish_files(out_dir, [
         ('cases.jsonl', ''.join(json.dumps(r, ensure_ascii=False, sort_keys=True, allow_nan=False) + '\n'
                                 for r in records).encode('utf-8')),
         ('report.md', report(summary).encode('utf-8')),
         ('metrics.json', (json.dumps(summary, ensure_ascii=False, indent=2, allow_nan=False) + '\n').encode('utf-8')),
-    ]
+    ])
+
+
+def publish_files(out_dir: Path, payloads: Sequence[Tuple[str, bytes]]) -> None:
+    """Atomically replace each (name, bytes) in out_dir; metrics.json is always written last.
+
+    Any previous metrics.json is removed before the first replacement, so its presence always means every file
+    comes from the same completed run, even when a later write fails (disk full, permissions).
+    """
+    payloads = sorted(payloads, key=lambda item: item[0] == 'metrics.json')   # stable: others keep their order
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / 'metrics.json').unlink(missing_ok=True)
     for name, data in payloads:
