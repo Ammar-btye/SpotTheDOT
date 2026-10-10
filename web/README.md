@@ -1,36 +1,60 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# SPOTlight dashboard
 
-## Getting Started
-
-First, run the development server:
+Run the frontend and backend together from the repository root:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+make up
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://localhost:3000. Docker supplies Node.js and installs frontend dependencies automatically.
+To start just the dashboard against the existing Docker backend:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+docker compose up -d web
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The overview fetches `/api/dashboard` immediately and every 10 seconds while visible. This Next.js server
+route requests `/api/v1/insights/overview`, `/flags?status=OPEN&limit=500`, `/assets`, `/locations`, and
+`/insights/reliability?group_by=battery_band` from FastAPI. Backend order and scores are preserved.
+Up to 500 open escalated flags are displayed, with the total shown when the queue is larger. Metrics and
+battery bands come from backend data, replacing the frontend CSV analysis. Failed requests show an error
+and Retry; a failed refresh retains the last successful data with a connection warning. Refresh now
+requests an immediate update.
 
-## Learn More
+The V2 comparison uses the backend's matched-battery metric (actions above 40% battery), rather than
+unadjusted gain. Click a flag to see its evidence, status and action history. Load explanation requests
+the backend's explanation on demand, with template/stub output labeled. Acknowledge or Resolve updates
+the backend and removes the flag from the open queue. The panel stays open with Reopen flag available;
+reopening returns it to OPEN and retains notes and audit history. The shell's search field remains unfinished.
 
-To learn more about Next.js, take a look at the following resources:
+## Reversible features
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Set any of these in the root `.env` to `false` and run `docker compose up -d --no-deps web`:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```dotenv
+FEATURE_FLAG_DETAILS=true
+FEATURE_FLAG_ACTIONS=true
+FEATURE_FLAG_EXPLANATIONS=true
+```
 
-## Deploy on Vercel
+Defaults are `true`. Actions and explanations can be disabled independently while details remain
+available. Disabling details also disables both dependent features. Disabled features are hidden and
+their Next.js routes reject requests. Set them back to `true` and run the same command to restore them.
+The switches do not erase data or change the underlying FastAPI endpoints, and are not authentication.
+For native development set them in `web/.env.local` and restart the dev server.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Reopen reverses the flag's status change; it does not delete the recorded acknowledgement, resolution,
+or note. After closing an acknowledged/resolved flag, reopen its detail at `/?flag=<flag_id>`.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+For native development with Node.js installed:
+
+```bash
+cd web
+npm ci
+npm run dev
+```
+
+The default backend is `http://127.0.0.1:8000/api/v1`. Set `BACKEND_URL` in `web/.env.local` to change it.
+In Docker, set `WEB_BACKEND_URL` in the root `.env` instead. Include `/api/v1` in either URL. These are
+server settings; the browser always requests its own `/api/dashboard` origin. No frontend admin secret
+or browser CORS configuration is required for these reads.

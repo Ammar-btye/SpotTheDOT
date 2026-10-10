@@ -7,6 +7,7 @@ header table too) and this page. Ports and contracts are in `docs/backend-servic
 
 | Service | Port | Profiles | Image / folder | Notes |
 |---|---|---|---|---|
+| `web` | 3000 | local, hybrid, neon, frontend | `node:24`, `web/` | Next.js development dashboard. `/api/dashboard` reads backend data. Polls every 10 seconds; shows connection errors and retains the last successful update. |
 | `db` | 5433 (host: `DB_PORT`) | local, hybrid | `pgvector/pgvector:pg17` | Local stand-in for Neon. Named volume `pgdata`. |
 | `db-init` | n/a | local, hybrid, neon | `db/Dockerfile` | One-shot job: migrate, create login users, seed, ingest (embeds the RAG corpus), status. Idempotent and non-destructive: `seed` only inserts missing rows and loads the demo baseline (events + flags) on a database's first seed, so `make up` never overwrites live or acknowledged flags or refills a reset demo (audit M5). |
 | `embed` | 8081 | local, models | `amd/embed/` | Qwen3-Embedding-0.6B. `TORCH_VARIANT` build arg. HF cache volume `hf-cache`. `EMBED_BATCH=8` (32 OOM-killed it). |
@@ -27,6 +28,14 @@ Published ports bind to `127.0.0.1` by default (`BIND_ADDR`). Inside the network
 6. Use `required: false` for any dependency that some profile doesn't start.
 
 ## Setup
+The dashboard starts with the stack at **http://localhost:3000**; no host Node.js installation is needed.
+Its server reads `WEB_BACKEND_URL` (default `http://backend:8000/api/v1` in Docker). Backend secrets stay on
+the backend; the dashboard's read endpoints require no admin token. This wires the overview and queue;
+flag details, explanations and acknowledge/resolve/reopen actions are available. The search box remains
+unfinished. `FEATURE_FLAG_DETAILS`, `FEATURE_FLAG_ACTIONS`, and `FEATURE_FLAG_EXPLANATIONS` independently
+disable features with `false` (disabling details also disables its dependent features). After changing
+the root `.env`, run `docker compose up -d --no-deps web`. Re-enable with `true`; data is retained.
+
 ```bash
 cp .env.example .env                # pick COMPOSE_PROFILES; dev passwords are fine locally
 sed -i.bak "s/^ADMIN_TOKEN=.*/ADMIN_TOKEN=$(openssl rand -hex 24)/" .env   # required for /ops, /replay, POST /events
