@@ -30,6 +30,8 @@
 - **Visual defects are covered** by real corrosion/crack/valve-well sets with boxes (MIT/CC-BY), enough for a small detector or a VLM yes/no eval like Orbit's "AI" inspections.
 - **Acoustic is covered** by DCASE 2025 (includes valves) and MIMII pumps, both labelled normal/anomaly.
 - **Thermal is the gap.** No labelled equipment-thermal set with temperatures was found on HF. Colour-mapped thermal images carry no radiometric data, so read temperature from the colour bar (OpenCV) and test on images we render at known temperatures.
+- **MeasureBench numbers to quote correctly** ([paper](https://arxiv.org/abs/2510.26865), HTML version, Table 2/7): "30%" is Gemini-2.5-Pro's real-world score over **all 26 instrument types** (30.2% overall, 31.5% on dials); pressure gauges are not broken out. Closest to our model: Qwen3-VL-8B 15.3% overall, 14.5% dials. Prior special-purpose CV gauge readers did worse (Reitsma et al. 2024: 8.5%; Shu et al. 2023: failed on all). GRPO fine-tuning on synthetic gauges lifted Qwen2.5-VL-7B from 14.6% to 19.7% on real. Scoring is interval matching, so answers within a per-image tolerance count. Qwen3.5-9B is not in the paper.
+- **Implication:** beating 30% on wild, unknown gauges is unlikely this weekend. SPOT's setting is easier: it revisits the same gauge from the same waypoint, so each gauge's range and min/max needle angles can be calibrated once (as Orbit/Levatas do). Measure the lift from that calibration rather than chasing the open benchmark.
 - None of these link to kit missions. In the demo, label images as illustrative and show the cross-check, not a claim that SPOT took them.
 
 ## 4. Open questions / next searches
