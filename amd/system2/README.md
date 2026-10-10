@@ -24,7 +24,14 @@ API contract with `web/`: `analyst/contract.py` (contract `2026-10-10.1`) is the
 Prompt first. Fine-tuning is a gated stretch goal (R5), only if the pipeline works end to end.
 
 ## Contract
-All models live in `analyst/contract.py` and reject unknown fields (an extra field gets a 422).
+All models live in `analyst/contract.py` and reject unknown fields (an extra field gets a 422). Types are strict, so
+the server accepts exactly what the exported JSON Schema allows: `"yes"` is not a boolean, `"5"` is not an integer,
+and a number is not a timestamp.
+
+Timestamps are **naive** ISO 8601 strings in kit site time, with no offset and no `Z`, e.g. `"2026-09-01T18:27:54"`
+(optionally with up to 6 fractional-second digits). This is the only form the kit CSVs use. A timestamp with an offset
+or `Z` gets a 422, so send JavaScript dates as local site time, not `toISOString()`. The schema states this as a
+`pattern` instead of `format: date-time`, because RFC 3339 date-time requires an offset.
 
 | Model | What it is |
 |---|---|

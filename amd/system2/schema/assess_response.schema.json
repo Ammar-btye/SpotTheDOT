@@ -258,7 +258,8 @@
           "title": "Action Id"
         },
         "timestamp": {
-          "format": "date-time",
+          "description": "Naive ISO 8601 kit site time, no offset or Z",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,6})?$",
           "title": "Timestamp",
           "type": "string"
         },

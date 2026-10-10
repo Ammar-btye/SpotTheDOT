@@ -6,6 +6,7 @@ Run: uv run --no-project --with-requirements amd/system2/requirements.txt python
 import copy
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -211,3 +212,35 @@ def test_mission_flag_accepted():
     f = _flag()
     f.update(kind="mission", category="mission_health", action_id=None, event_id="mis-M001")
     Flag.model_validate(f)
+
+
+# ── strict types and naive timestamps (decision A8) ──────────────────────────
+
+@pytest.mark.parametrize("field,value", [
+    ("escalate", "yes"), ("escalate", 1), ("scores", {"escalate": "0.9"}), ("timestamp", 1700000000),
+    ("timestamp", 1700000000.5), ("timestamp", "2026-09-01T18:27:54Z"), ("timestamp", "2026-09-01T18:27:54+05:00"),
+    ("timestamp", "2026-09-01 18:27:54"), ("timestamp", "2026-09-01"), ("timestamp", "2026-13-01T18:27:54"),
+    ("timestamp", "2026-09-01T18:27:54\n"), ("timestamp", datetime(2026, 9, 1, 18, 27, 54, tzinfo=timezone.utc)),
+], ids=["bool_str", "bool_int", "prob_str", "ts_int", "ts_float", "ts_z", "ts_offset", "ts_space", "ts_date",
+        "ts_month13", "ts_newline", "ts_aware_obj"])
+def test_flag_strict_types(field, value):
+    f = _flag()
+    f[field] = value
+    _bad(Flag, f)
+
+
+def test_meta_strict_int():
+    m = _resp()["meta"]
+    for v in ("5", 5.0, True):
+        _bad(Meta, dict(m, latency_ms=v))
+
+
+@pytest.mark.parametrize("ts", ["2026-09-01T18:27:54", "2026-09-01T18:27:54.5", "2026-09-01T18:27:54.123456"])
+def test_naive_timestamp_round_trips(ts):
+    f = _flag()
+    f["timestamp"] = ts
+    got = Flag.model_validate(f)
+    assert got.timestamp.tzinfo is None
+    assert Flag.model_validate_json(json.dumps(f)) == got
+    assert Flag.model_validate(got.model_dump(mode="json")) == got
+    assert Flag.model_validate(dict(f, timestamp=got.timestamp)) == got     # a naive datetime object is fine too

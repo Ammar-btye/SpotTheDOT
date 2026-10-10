@@ -14,11 +14,15 @@ Decisions (plan 01-01, open to veto before web integrates):
   A5  confidence is low|med|high (R3), not a float; severity_assessment/reasoning are replaced by cited evidence.
   A6  The stub returns the matched fixture response with meta.model="stub" and keeps the fixture's path.
   A7  Every model forbids extra fields (unknown field -> 422); contract changes bump CONTRACT_VERSION.
+  A8  Strict types: the runtime accepts exactly what the exported JSON Schema allows (no "yes" -> bool, no "5" -> int,
+      no int -> datetime). Timestamps are naive ISO 8601 strings in kit site time, the only form the kit CSVs use
+      ("2026-09-01T18:27:54"); an offset or "Z" is rejected so naive and aware values never mix.
 """
+import re
 from datetime import datetime
 from typing import Annotated, Dict, List, Literal, Optional, Tuple, Union, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, WithJsonSchema, model_validator
 
 CONTRACT_VERSION = "2026-10-10.1"
 
@@ -53,6 +57,25 @@ RowId = Annotated[str, Field(pattern=r"^[EFSWI][1-9][0-9]?$")]
 Prob = Annotated[float, Field(ge=0, le=1)]
 Scalar = Union[str, int, float, bool, None]
 
+# Decision A8. Same regex at runtime and in the exported schema, so both accept exactly the same strings. The schema
+# drops `format: date-time` on purpose: RFC 3339 date-time requires an offset, which kit timestamps never carry.
+NAIVE_ISO = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?$"
+
+
+def _naive_iso(v):
+    """Pass a naive ISO 8601 string (or naive datetime) on to datetime parsing; ValueError on anything else."""
+    if isinstance(v, str) and re.fullmatch(NAIVE_ISO, v):
+        return v
+    if isinstance(v, datetime) and v.tzinfo is None:
+        return v
+    raise ValueError("timestamp must be a naive ISO 8601 string like '2026-09-01T18:27:54' (kit site time, "
+                     "no offset or 'Z'), got %s" % type(v).__name__)
+
+
+Timestamp = Annotated[datetime, Field(strict=False), BeforeValidator(_naive_iso),
+                      WithJsonSchema({"type": "string", "pattern": NAIVE_ISO,
+                                      "description": "Naive ISO 8601 kit site time, no offset or Z"})]
+
 CATEGORIES: Tuple[str, ...] = get_args(Category)
 ACTIONS: Tuple[str, ...] = get_args(Action)
 SECTIONS: Tuple[str, ...] = get_args(Section)
@@ -81,7 +104,7 @@ ACTIONS_BY_CATEGORY: Dict[str, Tuple[str, ...]] = {
 # ── models ───────────────────────────────────────────────────────────────────
 
 class _Model(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)        # decisions A7, A8
 
 
 class Reason(_Model):
@@ -95,7 +118,7 @@ class Flag(_Model):
     event_id: SafeId
     mission_id: MissionId
     action_id: Optional[SafeId] = None
-    timestamp: datetime
+    timestamp: Timestamp
     category: Category
     priority: Priority
     escalate: bool

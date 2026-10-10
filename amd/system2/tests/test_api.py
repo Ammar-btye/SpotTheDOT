@@ -86,6 +86,17 @@ def test_malformed_flag_422(client, mutate):
     assert r.status_code == 422, r.text
 
 
+@pytest.mark.parametrize("field,value", [
+    ("escalate", "yes"), ("timestamp", 1700000000), ("timestamp", "2026-09-01T18:27:54Z"),
+    ("timestamp", "2026-09-01T18:27:54+05:00"),
+], ids=["bool_str", "ts_int", "ts_z", "ts_offset"])
+def test_lax_values_422(client, field, value):
+    req = _req()
+    req["flag"][field] = value
+    r = client.post("/v1/assess", json=req, headers=_h())
+    assert r.status_code == 422, r.text
+
+
 def test_health_open_and_keyless(client):
     r = client.get("/health")
     assert r.status_code == 200
