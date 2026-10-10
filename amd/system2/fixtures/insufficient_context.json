@@ -1,0 +1,73 @@
+{
+  "name": "insufficient_context",
+  "description": "Insufficient-context case: System 2's data source cannot resolve the flagged action A9999 (no such action in the kit), so the packet has no event, asset or waypoint rows, no LLM runs, and the only allowed action is manual_review. Demonstrates meta.path insufficient_context.",
+  "request": {
+    "flag": {
+      "flag_id": "flag:act-A9999",
+      "kind": "action",
+      "event_id": "act-A9999",
+      "mission_id": "M002",
+      "action_id": "A9999",
+      "timestamp": "2026-09-02T02:30:00",
+      "category": "data_quality",
+      "priority": "P2",
+      "escalate": true,
+      "reading_trust": "untrusted",
+      "reasons": [
+        {"rule": "reading_untrusted", "text": "Reading quality QUESTIONABLE"}
+      ],
+      "scores": {},
+      "source": "system1",
+      "split": "train"
+    }
+  },
+  "response": {
+    "contract_version": "2026-10-10.1",
+    "flag_id": "flag:act-A9999",
+    "explanation": {
+      "evidence": [],
+      "answer": "Insufficient data: needs event, asset and waypoint rows for act-A9999.",
+      "question": "What happened on action A9999?",
+      "recommended_action": "manual_review",
+      "confidence": "low",
+      "insufficient_context": true
+    },
+    "packet": {
+      "flag": {
+        "flag_id": "flag:act-A9999",
+        "kind": "action",
+        "event_id": "act-A9999",
+        "mission_id": "M002",
+        "action_id": "A9999",
+        "timestamp": "2026-09-02T02:30:00",
+        "category": "data_quality",
+        "priority": "P2",
+        "escalate": true,
+        "reading_trust": "untrusted",
+        "reasons": [
+          {"rule": "reading_untrusted", "text": "Reading quality QUESTIONABLE"}
+        ],
+        "scores": {},
+        "source": "system1",
+        "split": "train"
+      },
+      "event": [],
+      "facts": [],
+      "asset": [],
+      "waypoint": [],
+      "incidents": [],
+      "allowed_actions": ["manual_review"],
+      "validator_action": "manual_review",
+      "missing": ["event", "asset", "waypoint"],
+      "question": "Explain why flag flag:act-A9999 matters and what the operator should do next."
+    },
+    "meta": {
+      "model": "none",
+      "prompt_ver": null,
+      "path": "insufficient_context",
+      "latency_ms": 0,
+      "tokens_per_sec": null,
+      "packet_hash": null
+    }
+  }
+}

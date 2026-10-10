@@ -17,7 +17,7 @@ import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from analyst.api import FIXTURES, KEY_HEADER, MIN_KEY_LEN, create_app  # noqa: E402
-from analyst.contract import CONTRACT_VERSION, AssessRequest, AssessResponse  # noqa: E402
+from analyst.contract import CATEGORIES, CONTRACT_VERSION, AssessRequest, AssessResponse  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]                         # amd/system2
 MANIFEST = ROOT.parent / "system1" / "data" / "manifest.json"      # System 1's mission-level split
@@ -99,3 +99,39 @@ def test_stub_serves_fixture(client, path):
     body = AssessResponse.model_validate(r.json())
     assert body.explanation.model_dump(mode="json") == d["response"]["explanation"]
     assert body.meta.model == "stub"
+
+
+# ── coverage: what web can render ────────────────────────────────────────────
+
+def _all() -> list:
+    return [_load(p) for p in FIXTURE_FILES]
+
+
+def test_one_fixture_per_category():
+    cats = [d["request"]["flag"]["category"] for d in _all()
+            if not d["response"]["explanation"]["insufficient_context"]]
+    assert set(cats) == set(CATEGORIES), sorted(cats)
+    assert len(cats) == len(set(cats)), sorted(cats)
+
+
+def test_one_insufficient_fixture():
+    ins = [d for d in _all() if d["response"]["explanation"]["insufficient_context"]]
+    assert len(ins) == 1, [d["name"] for d in ins]
+    resp = ins[0]["response"]
+    assert resp["packet"]["missing"]
+    assert resp["explanation"]["evidence"] == []
+    assert resp["explanation"]["recommended_action"] == "manual_review"
+    assert resp["meta"]["path"] == "insufficient_context"
+
+
+def test_stub_routes_insufficient_by_flag_id(client):
+    d = _load(FIXTURES / "insufficient_context.json")
+    r = client.post("/v1/assess", json=d["request"], headers={KEY_HEADER: TEST_KEY})
+    assert r.status_code == 200, r.text
+    body = AssessResponse.model_validate(r.json())
+    assert body.explanation.insufficient_context is True
+    assert body.flag_id == "flag:act-A9999"
+
+
+def test_paths_cover_ui_states():
+    assert {d["response"]["meta"]["path"] for d in _all()} == {"first_pass", "retry", "fallback", "insufficient_context"}
