@@ -18,6 +18,47 @@
    A colour defined ONLY inside a media query has no value in the third state.
    ───────────────────────────────────────────────────────────────────────── */
 
+/* ── Animatable ramp tokens ──────────────────────────────────────────────────
+   A plain custom property is a string as far as animation is concerned: it
+   flips from one value to the next with nothing in between, so the hero ramp
+   could only ever cut between presets. Registering the four here gives them a
+   type, and a typed custom property interpolates — which is the whole
+   mechanism behind the Auto cycle below and behind the smooth hand-off when
+   someone clicks through the presets.
+
+   initial-value is mandatory for a registered non-universal syntax. These
+   repeat the light-mode default rather than naming a new colour; the :root
+   table below immediately overrides them, so the value only ever shows if
+   that declaration is somehow missing.
+
+   inherits is left at its default (true) for all four: they are declared on
+   <html> and read by .hero-gradient and .hero-swatch much further down the
+   tree. */
+@property --c-hero-from {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #2b4bb8;
+}
+
+@property --c-hero-via {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #6b3fa8;
+}
+
+@property --c-hero-to {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #c25a16;
+}
+
+/* <number>, not <percentage>: it feeds an alpha channel as rgb(0 0 0 / N). */
+@property --c-hero-scrim {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0.3;
+}
+
 /* LIGHT — the default, and the base every other state overrides. */
 :root {
   --c-canvas: #f4f5f5;       /* page behind the panels */
@@ -133,8 +174,8 @@
 }
 
 /* ── Hero gradient presets ──────────────────────────────────────────────────
-   Set by [data-hero] on <html>; with no attribute the banner follows the
-   theme-aware default above.
+   Set by [data-hero] on <html>. With no attribute the banner is in Auto,
+   which drifts through all four ramps on a loop — see the cycle below.
 
    The scrim is per-preset and not a style choice. White body text needs
    4.5:1 against the lightest stop of whichever ramp is showing, and these
@@ -145,8 +186,9 @@
    plus a few points of margin; re-solve if a stop is ever re-tuned.
 
    Named presets are deliberately theme-independent: "Dusk" should look like
-   dusk whether the console is in light or dark. Only the default follows the
-   theme. */
+   dusk whether the console is in light or dark. Only the theme-aware default
+   in the tables above follows the theme, and it is what Auto falls back to
+   when the cycle is suppressed. */
 :root[data-hero="dawn"] {
   --c-hero-from: #3a2a7a;
   --c-hero-via: #c0417a;
@@ -173,6 +215,98 @@
   --c-hero-via: #26306e;
   --c-hero-to: #4a4a8f;
   --c-hero-scrim: 0.24;
+}
+
+/* ── Auto: the cycle ────────────────────────────────────────────────────────
+   Auto is not a fifth ramp, it is the absence of a choice — so it drifts
+   through the four named ones instead of picking one. Twelve seconds on each
+   ramp, three seconds crossfading between them, one minute round the loop.
+   Those numbers are chosen to sit under the threshold where ambient motion
+   starts reading as a thing that is happening: at three seconds a crossfade
+   has no discernible start, and nobody watching the queue notices the banner
+   move. Shortening the holds is what would make this a distraction, not
+   shortening the fades.
+
+   The stops are written out again rather than referenced as var(--c-hero-*).
+   A var() here would resolve against whatever ramp is currently applied —
+   which, in Auto, is this animation's own output — so the keyframes would
+   collapse to a no-op. The duplication is the price of doing this without
+   JavaScript, and it is why the solved scrims below each carry their preset's
+   value: re-tune a stop above and this block has to follow.
+
+   Those scrims interpolate along with the colours, and that is checked rather
+   than assumed. White body text holds 5.69:1 at the worst frame of the worst
+   crossfade (Dawn's amber end under 0.38), against a 4.5:1 floor — in both
+   sRGB and oklab, since which space a registered <color> interpolates in is
+   the engine's choice and not ours to rely on. Interpolated colour never
+   outruns the lighter of the two ramps it sits between, so holding each
+   preset's own scrim is enough; no frame needs the maximum. */
+@keyframes hero-cycle {
+  0%,
+  20% {
+    --c-hero-from: #3a2a7a;
+    --c-hero-via: #c0417a;
+    --c-hero-to: #e8923a;
+    --c-hero-scrim: 0.38;
+  }
+
+  25%,
+  45% {
+    --c-hero-from: #1565c0;
+    --c-hero-via: #2a9fd6;
+    --c-hero-to: #d9a520;
+    --c-hero-scrim: 0.42;
+  }
+
+  50%,
+  70% {
+    --c-hero-from: #3b5bd9;
+    --c-hero-via: #8b4fd4;
+    --c-hero-to: #e8761f;
+    --c-hero-scrim: 0.32;
+  }
+
+  75%,
+  95% {
+    --c-hero-from: #0f1b3d;
+    --c-hero-via: #26306e;
+    --c-hero-to: #4a4a8f;
+    --c-hero-scrim: 0.24;
+  }
+
+  100% {
+    --c-hero-from: #3a2a7a;
+    --c-hero-via: #c0417a;
+    --c-hero-to: #e8923a;
+    --c-hero-scrim: 0.38;
+  }
+}
+
+/* The animation is on :root because that is where the tokens are declared,
+   and it has to be: an animation beats every normal declaration, so running
+   it anywhere else would leave the theme tables above winning. Scoping it to
+   :not([data-hero]) is what makes picking a named ramp stop the cycle —
+   the attribute appears, this rule stops matching, the animation is gone.
+
+   linear, not --ease-settle. An eased crossfade has a visible beginning; a
+   linear one just gradually turns out to have happened. */
+:root:not([data-hero]) {
+  animation: hero-cycle 60s linear infinite;
+}
+
+/* Leaving Auto, or stepping between two named ramps, interpolates for the
+   same reason the cycle can: these four are registered properties. Without
+   this the banner would cut, which would be a strange thing to do in a
+   control whose whole subject is a smooth gradient. Faster than a cycle
+   crossfade because this one is a response to a click — it has to feel
+   connected to the press, so it is tied to --dur-base rather than to the
+   ambient timing. */
+:root {
+  transition:
+    --c-hero-from var(--dur-base) var(--ease-settle),
+    --c-hero-via var(--dur-base) var(--ease-settle),
+    --c-hero-to var(--dur-base) var(--ease-settle),
+    --c-hero-scrim var(--dur-base) var(--ease-settle);
 }
 
 /* `inline` matters: it makes each utility emit var(--c-*) rather than baking
@@ -400,5 +534,15 @@ body {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     transition-delay: 0ms !important;
+  }
+
+  /* The Auto cycle is removed outright rather than collapsed. The rule above
+     would hold it on its last keyframe, which is Dawn — so "Auto" would quietly
+     mean a fixed violet ramp, and in particular would stop following light and
+     dark. Dropping the animation hands the banner back to the theme-aware
+     default, which is the honest reading of Auto when motion is unwelcome.
+     Higher specificity than the `*` rule, so it wins between equals. */
+  :root:not([data-hero]) {
+    animation: none !important;
   }
 }

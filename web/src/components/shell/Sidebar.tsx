@@ -92,7 +92,16 @@ function Section({ item, pathname }: { item: NavItem; pathname: string }) {
   );
 }
 
-export function Sidebar({ onClose }: { onClose: () => void }) {
+/* `provenance` arrives as a prop rather than being imported: this is a
+   Client Component, and @/lib/analysis reads the filesystem. The strings are
+   computed on the server and handed down already rendered. */
+export function Sidebar({
+  onClose,
+  provenance,
+}: {
+  onClose: () => void;
+  provenance: { source: string; coverage: string };
+}) {
   const pathname = usePathname();
 
   return (
@@ -125,8 +134,12 @@ export function Sidebar({ onClose }: { onClose: () => void }) {
       </nav>
 
       <div className="shrink-0 border-t border-line px-3 py-2">
+        {/* The rail's footer says where every number on screen came from.
+            It used to read "Placeholder data — not yet wired to the kit",
+            which is now exactly the wrong thing to tell someone. */}
+        <p className="text-[11px] leading-snug text-faint">{provenance.source}</p>
         <p className="nums text-[11px] leading-snug text-faint">
-          Placeholder data — not yet wired to the kit
+          {provenance.coverage}
         </p>
       </div>
     </div>

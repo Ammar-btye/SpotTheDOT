@@ -466,6 +466,19 @@ export const stats: Stat[] = [
 ];
 
 /**
+ * Where the numbers came from, for the rail's footer.
+ *
+ * Worth stating plainly in the UI: the kit's Data_Assumptions.md is emphatic
+ * that every row is synthetic and fictional, and a console that shows
+ * failures on named equipment should say so on its own face rather than leave
+ * a reader to assume otherwise.
+ */
+export const provenance = {
+  source: "Challenge kit CSVs · synthetic",
+  coverage: `${kit.missions.length} missions · ${kit.actions.length} actions · ${facts.window}`,
+};
+
+/**
  * The claims the page makes in prose. Derived here rather than typed into the
  * components, so a sentence in the copy can never drift from the data behind
  * it — if the CSVs change, the sentence changes with them.

@@ -7,9 +7,10 @@ import { TypeIn } from "./TypeIn";
    still knows what the console is claiming.
 
    The background is .hero-gradient in globals.css, next to the tokens it
-   reads — see the note there for why it is not an inline style. The stops
-   shift with the theme, and BannerControls can swap the whole ramp for a
-   named preset. The scrim over them is load-bearing, not decoration: white
+   reads — see the note there for why it is not an inline style. By default
+   the ramp cycles slowly through the four named presets; BannerControls can
+   pin it to any one of them, and the theme-aware default takes over when
+   motion is reduced. The scrim over them is load-bearing, not decoration: white
    text clears 4.5:1 on the blue and purple stops unaided but only reaches
    2.98:1 on the warm end, and which stop the text sits over depends on the
    viewport width. Its strength is per-preset, so the worst case stays above
