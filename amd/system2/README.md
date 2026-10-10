@@ -26,11 +26,11 @@ Citation resolution and membership of the recommended action in the supplied pac
 because the static response schema has no access to that request's content or allowed actions.
 
 Six current fixture pairs are `fixtures/backend/equipment.json`, `fixtures/backend/robot_health.json`,
-`fixtures/backend/navigation.json`, `fixtures/backend/data_quality.json`, `fixtures/backend/mission_health.json`,
+`fixtures/backend/navigation.json`, `fixtures/backend/data_quality.json`, `fixtures/backend/mission.json`,
 and `fixtures/backend/insufficient_context.json`. Use their `request` objects for HTTP calls.
 
 Native/compose System 2 port is **8083**; llama-server remains 8080. `SYSTEM2_API_KEY` is the primary secret;
-`AMD_API_KEY` is the compatibility alias. See [RUNNING.md](../../RUNNING.md) for current startup and compose.
+`AMD_API_KEY` is the compatibility alias. See [RUNNING.md](../../docs/RUNNING.md) for current startup and compose.
 Authorization via `X-API-Key` precedes body parsing; `/health` is open. Native binds loopback; remote access uses
 `ssh -L 8083:127.0.0.1:8083 <user>@<amd-box>`. Compose callers use `http://system2:8083`.
 
