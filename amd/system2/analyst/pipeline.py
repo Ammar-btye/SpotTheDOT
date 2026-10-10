@@ -37,8 +37,9 @@ from .template import template_assessment
 PATHS = ('llm', 'retry', 'fallback', 'insufficient_context')
 MAX_ATTEMPTS = 2
 INSUFFICIENT_ANSWER = 'Insufficient supplied context; request manual review.'
-SECRET_RE = re.compile(r'(?i)\b(bearer|x-api-key|api[-_ ]?key|authorization|token|secret|password)\b'
-                       r'(\s*[:=]\s*|\s+)(bearer\s+)?[^\s,;&]+')
+# keyword, then `=`/`:` (optionally inside JSON/Python quotes) or whitespace, then any auth scheme word, then the value
+SECRET_RE = re.compile(r'(?i)\b(bearer|basic|digest|x-api-key|api[-_ ]?key|authorization|token|secret|password)\b'
+                       r'(["\']?\s*[:=]\s*["\']?|\s+)((?:bearer|basic|digest|token)\s+)?[^\s,;&"\'}]+')
 URL_AUTH_RE = re.compile(r'(?i)(//)[^/\s@]+@')
 QUERY_RE = re.compile(r'(?i)([?&](?:key|api_key|apikey|token|access_token|secret)=)[^&\s]+')
 

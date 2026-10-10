@@ -278,6 +278,21 @@ def test_secrets_redacted_and_metrics_sanitized():
     assert all(i in prepared.content for e in run.assessment['evidence'] for i in e['ids'])
 
 
+@pytest.mark.parametrize('detail, secret', [
+    ('{"api_key": "sk-abc123"}', 'sk-abc123'),
+    ("{'password': 'hunter2'}", 'hunter2'),
+    ('Authorization: Basic dXNlcjpwYXNz', 'dXNlcjpwYXNz'),
+    ('authorization="Digest c2VjcmV0LWRpZ2VzdA"', 'c2VjcmV0LWRpZ2VzdA'),
+    ('"token":"tok-9f8e7d"', 'tok-9f8e7d'),
+    ('x-api-key: k-5551234', 'k-5551234'),
+    ('Bearer sk-SECRET123', 'sk-SECRET123'),
+])
+def test_redact_covers_quoted_keys_and_auth_schemes(detail, secret):
+    p = api()
+    out = p.redact('http 401 ' + detail)
+    assert secret not in out and '[REDACTED]' in out
+
+
 def test_raw_first_attempt_recorded_separately_from_final():
     p, req = api(), equipment()
     g = FakeGen([gen(invalid_candidate(req), tokens_per_sec=30.0, completion_tokens=80),
