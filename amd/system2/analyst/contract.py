@@ -60,7 +60,12 @@ SECTIONS: Tuple[str, ...] = get_args(Section)
 SECTION_PREFIX: Dict[str, str] = {"event": "E", "facts": "F", "asset": "S", "waypoint": "W", "incidents": "I"}
 EXPLANATION_ORDER = ("evidence", "answer", "question", "recommended_action", "confidence", "insufficient_context")
 
-# Ordered most-specific first; "monitor" and "manual_review" are always available.
+# Every packet must offer "manual_review": the insufficient-context and fallback paths always answer with it, so a
+# packet without it would make those answers unconstructible (a 500 instead of the safe answer). "monitor" is listed
+# for every category but a packet may leave it out (an insufficient-context packet carries only "manual_review").
+ALWAYS_ALLOWED = "manual_review"
+
+# Ordered most-specific first.
 ACTIONS_BY_CATEGORY: Dict[str, Tuple[str, ...]] = {
     "equipment": ("dispatch_technician", "schedule_maintenance", "reinspect_next_mission", "monitor",
                   "manual_review"),
@@ -152,6 +157,8 @@ class ContextPacket(_Model):
         extra = [a for a in self.allowed_actions if a not in ACTIONS_BY_CATEGORY[self.flag.category]]
         if extra:
             raise ValueError("allowed_actions %r not allowed for category %r" % (extra, self.flag.category))
+        if ALWAYS_ALLOWED not in self.allowed_actions:
+            raise ValueError("allowed_actions %r must include %r" % (self.allowed_actions, ALWAYS_ALLOWED))
         if self.validator_action is not None and self.validator_action not in self.allowed_actions:
             raise ValueError("validator_action %r not in allowed_actions" % self.validator_action)
         if len(set(self.missing)) != len(self.missing):

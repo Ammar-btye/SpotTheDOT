@@ -44,9 +44,10 @@ citation to a row that is not in the packet.
 reorder fields. `confidence` is `low`, `med` or `high`. `meta.path` is `first_pass`, `retry`, `fallback` or
 `insufficient_context`.
 
-`recommended_action` must be one of the packet's `allowed_actions`, which come from this table. `monitor` and
-`manual_review` are always allowed; `mission_health` flags allow every action. When `insufficient_context` is true,
-the action is always `manual_review`.
+`recommended_action` must be one of the packet's `allowed_actions`, which come from this table. Only
+`manual_review` is guaranteed: the contract rejects a packet whose `allowed_actions` lacks it. `monitor` is listed
+for every category, but a packet may leave it out. `mission_health` flags allow every action. When
+`insufficient_context` is true, the action is always `manual_review`.
 
 | Action | Meaning | Allowed for |
 |---|---|---|

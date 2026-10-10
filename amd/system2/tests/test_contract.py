@@ -142,6 +142,26 @@ def test_allowed_actions_duplicate_rejected():
     _bad(ContextPacket, p)
 
 
+def test_allowed_actions_require_manual_review():
+    p = _resp()["packet"]
+    p["allowed_actions"].remove("manual_review")
+    _bad(ContextPacket, p)
+    p["allowed_actions"] = ["dispatch_technician"]
+    _bad(ContextPacket, p)
+
+
+def test_allowed_actions_monitor_optional():
+    p = _resp()["packet"]
+    p["allowed_actions"].remove("monitor")
+    ContextPacket.model_validate(p)
+
+
+def test_fixtures_offer_manual_review():
+    for path in sorted(FIXTURES.glob("*.json")):
+        d = json.loads(path.read_text(encoding="utf-8"))
+        assert "manual_review" in d["response"]["packet"]["allowed_actions"], path.stem
+
+
 def test_validator_action_outside_allowed_rejected():
     p = _resp()["packet"]
     p["allowed_actions"].remove("dispatch_technician")
