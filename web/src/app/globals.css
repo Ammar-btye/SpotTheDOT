@@ -23,7 +23,7 @@
    flips from one value to the next with nothing in between, so the hero ramp
    could only ever cut between presets. Registering the four here gives them a
    type, and a typed custom property interpolates — which is the whole
-   mechanism behind the Auto cycle below and behind the smooth hand-off when
+   mechanism behind the Auto drift below and behind the smooth hand-off when
    someone clicks through the presets.
 
    initial-value is mandatory for a registered non-universal syntax. These
@@ -57,6 +57,53 @@
   syntax: "<number>";
   inherits: true;
   initial-value: 0.3;
+}
+
+/* ── Lamp geometry tokens ─────────────────────────────────────────────
+   The ramp's shape drifts as well as its colour. The axis swings, the mid stop
+   swells and contracts — that is the breath — and two soft bodies of colour
+   wander across the card. All six interpolate for the same reason the colours
+   above do, so they are registered too.
+
+   Percentages, not lengths: the paths are relative to the card, so they read
+   the same on a narrow banner as on a wide one instead of wandering off it.
+
+   Only .hero-gradient reads these, and it owns their animations — see the note
+   there for why the shape is card-local where the colour is document state. */
+@property --hero-angle {
+  syntax: "<angle>";
+  inherits: true;
+  initial-value: 110deg;
+}
+
+@property --hero-mid {
+  syntax: "<percentage>";
+  inherits: true;
+  initial-value: 52%;
+}
+
+@property --hero-lamp-a-x {
+  syntax: "<percentage>";
+  inherits: true;
+  initial-value: 88%;
+}
+
+@property --hero-lamp-a-y {
+  syntax: "<percentage>";
+  inherits: true;
+  initial-value: 22%;
+}
+
+@property --hero-lamp-b-x {
+  syntax: "<percentage>";
+  inherits: true;
+  initial-value: 10%;
+}
+
+@property --hero-lamp-b-y {
+  syntax: "<percentage>";
+  inherits: true;
+  initial-value: 74%;
 }
 
 /* LIGHT — the default, and the base every other state overrides. */
@@ -175,7 +222,7 @@
 
 /* ── Hero gradient presets ──────────────────────────────────────────────────
    Set by [data-hero] on <html>. With no attribute the banner is in Auto,
-   which drifts through all four ramps on a loop — see the cycle below.
+   which never settles on a ramp at all — see the lamp below.
 
    The scrim is per-preset and not a style choice. White body text needs
    4.5:1 against the lightest stop of whichever ramp is showing, and these
@@ -185,10 +232,16 @@
    muddy it stops being a gradient. Each value below is the solved minimum
    plus a few points of margin; re-solve if a stop is ever re-tuned.
 
+   A pinned preset is a fixed mood, not a still image: the colours stop
+   drifting, but the lamp bodies and the breath carry on in that preset's own
+   palette, under its own solved scrim. That bound holds for the same reason it
+   holds in Auto — a body is one of the ramp's own colours at partial alpha, so
+   it can never be brighter than the stop the scrim was solved against.
+
    Named presets are deliberately theme-independent: "Dusk" should look like
    dusk whether the console is in light or dark. Only the theme-aware default
    in the tables above follows the theme, and it is what Auto falls back to
-   when the cycle is suppressed. */
+   when the drift is suppressed. */
 :root[data-hero="dawn"] {
   --c-hero-from: #3a2a7a;
   --c-hero-via: #c0417a;
@@ -217,90 +270,136 @@
   --c-hero-scrim: 0.24;
 }
 
-/* ── Auto: the cycle ────────────────────────────────────────────────────────
-   Auto is not a fifth ramp, it is the absence of a choice — so it drifts
-   through the four named ones instead of picking one. Twelve seconds on each
-   ramp, three seconds crossfading between them, one minute round the loop.
-   Those numbers are chosen to sit under the threshold where ambient motion
-   starts reading as a thing that is happening: at three seconds a crossfade
-   has no discernible start, and nobody watching the queue notices the banner
-   move. Shortening the holds is what would make this a distraction, not
-   shortening the fades.
+/* ── Auto: the lamp ─────────────────────────────────────────────────────────
+   Auto is not a fifth ramp, it is the absence of a choice — so instead of
+   picking a mood it keeps moving through them. There are no holds and no
+   crossfades: the three stops are always in motion, each on its own loop, the
+   way a lava lamp is never between states because it is never in one.
 
-   The stops are written out again rather than referenced as var(--c-hero-*).
-   A var() here would resolve against whatever ramp is currently applied —
-   which, in Auto, is this animation's own output — so the keyframes would
-   collapse to a no-op. The duplication is the price of doing this without
-   JavaScript, and it is why the solved scrims below each carry their preset's
-   value: re-tune a stop above and this block has to follow.
+   Three loops of 149s, 191s and 233s. Those are coprime, so the stops never
+   line up twice — the combination you are looking at has not been on screen
+   before and will not come back in any session anyone will sit through. One
+   60s loop, however slow, is a thing you can learn; this is not. Each loop
+   visits five waypoints, so a single colour takes ~30-47s to become the next
+   one. That is an order of magnitude slower than the 3s crossfades it
+   replaces, which is the point: continuous motion is only unobtrusive if it
+   is slower than intermittent motion, and nothing here moves fast enough to
+   pull an eye off the queue.
 
-   Those scrims interpolate along with the colours, and that is checked rather
-   than assumed. White body text holds 5.69:1 at the worst frame of the worst
-   crossfade (Dawn's amber end under 0.38), against a 4.5:1 floor — in both
-   sRGB and oklab, since which space a registered <color> interpolates in is
-   the engine's choice and not ours to rely on. Interpolated colour never
-   outruns the lighter of the two ramps it sits between, so holding each
-   preset's own scrim is enough; no frame needs the maximum. */
-@keyframes hero-cycle {
+   The palette is a band, not a tour of the four presets. Midnight's near-black
+   and Noon's gold are both missing, and deliberately: with the stops drifting
+   independently the scrim can no longer be re-solved per ramp, so one fixed
+   value has to cover every frame, and that value is set by the brightest
+   colour in the band. Keeping the brightest stop at Dawn's amber buys a 0.38
+   scrim; admitting Noon's gold would push it past 0.40 and flatten every dark
+   frame in the loop to pay for one bright one. Both extremes are still one
+   click away as pinned presets, which is what the presets are for.
+
+   The stops are written out rather than referenced as var(--c-hero-*), for the
+   same reason the old cycle did: a var() here would resolve against this
+   animation's own output and collapse the keyframes to a no-op.
+
+   CONTRAST. 0.38 is solved against the worst frame of the warm track rather
+   than assumed. The binding constraint is not the body text — that holds
+   5.69:1 at its worst against a 4.5:1 floor — but the white/60 edge on the
+   banner's own controls, which needs 3:1 to read as a boundary and measures
+   3.15:1 there. Checked at every interpolated frame of all three tracks in
+   both sRGB and oklab, since which space a registered <color> interpolates in
+   is the engine's choice. The lamp bodies in .hero-gradient cannot beat that
+   worst case: each is a palette colour composited at partial alpha, and a
+   convex mix of palette colours is never brighter than the brightest one. */
+@keyframes hero-drift-anchor {
   0%,
+  100% {
+    --c-hero-from: #2a3a8f;
+  }
   20% {
+    --c-hero-from: #1565c0;
+  }
+  40% {
+    --c-hero-from: #15566b;
+  }
+  60% {
     --c-hero-from: #3a2a7a;
-    --c-hero-via: #c0417a;
+  }
+  80% {
+    --c-hero-from: #1f2a6e;
+  }
+}
+
+@keyframes hero-drift-core {
+  0%,
+  100% {
+    --c-hero-via: #6b3fa8;
+  }
+  20% {
+    --c-hero-via: #2a9fd6;
+  }
+  40% {
+    --c-hero-via: #a83275;
+  }
+  60% {
+    --c-hero-via: #8b4fd4;
+  }
+  80% {
+    --c-hero-via: #2f7fae;
+  }
+}
+
+/* The scrim rides along here, constant at every waypoint, because this is the
+   track it is solved against. Holding it in the keyframes rather than
+   declaring it on :root is what keeps it scoped to the running animation: when
+   reduced motion drops these, the banner falls back to the theme's ramp *and*
+   the theme's scrim, instead of wearing Auto's. */
+@keyframes hero-drift-glow {
+  0%,
+  100% {
     --c-hero-to: #e8923a;
     --c-hero-scrim: 0.38;
   }
-
-  25%,
-  45% {
-    --c-hero-from: #1565c0;
-    --c-hero-via: #2a9fd6;
-    --c-hero-to: #d9a520;
-    --c-hero-scrim: 0.42;
+  20% {
+    --c-hero-to: #cf7a1f;
+    --c-hero-scrim: 0.38;
   }
-
-  50%,
-  70% {
-    --c-hero-from: #3b5bd9;
-    --c-hero-via: #8b4fd4;
-    --c-hero-to: #e8761f;
-    --c-hero-scrim: 0.32;
+  40% {
+    --c-hero-to: #c0417a;
+    --c-hero-scrim: 0.38;
   }
-
-  75%,
-  95% {
-    --c-hero-from: #0f1b3d;
-    --c-hero-via: #26306e;
-    --c-hero-to: #4a4a8f;
-    --c-hero-scrim: 0.24;
+  60% {
+    --c-hero-to: #d98f26;
+    --c-hero-scrim: 0.38;
   }
-
-  100% {
-    --c-hero-from: #3a2a7a;
-    --c-hero-via: #c0417a;
-    --c-hero-to: #e8923a;
+  80% {
+    --c-hero-to: #b85a2a;
     --c-hero-scrim: 0.38;
   }
 }
 
-/* The animation is on :root because that is where the tokens are declared,
+/* The animations are on :root because that is where the tokens are declared,
    and it has to be: an animation beats every normal declaration, so running
-   it anywhere else would leave the theme tables above winning. Scoping it to
-   :not([data-hero]) is what makes picking a named ramp stop the cycle —
-   the attribute appears, this rule stops matching, the animation is gone.
+   them anywhere else would leave the theme tables above winning. Scoping to
+   :not([data-hero]) is what makes picking a named ramp stop the drift — the
+   attribute appears, this rule stops matching, the animations are gone.
 
-   linear, not --ease-settle. An eased crossfade has a visible beginning; a
-   linear one just gradually turns out to have happened. */
+   linear, not --ease-settle. An eased loop has a visible beginning; a linear
+   one just gradually turns out to have happened. */
 :root:not([data-hero]) {
-  animation: hero-cycle 60s linear infinite;
+  animation:
+    hero-drift-anchor 149s linear infinite,
+    hero-drift-core 191s linear infinite,
+    hero-drift-glow 233s linear infinite;
 }
 
 /* Leaving Auto, or stepping between two named ramps, interpolates for the
-   same reason the cycle can: these four are registered properties. Without
-   this the banner would cut, which would be a strange thing to do in a
-   control whose whole subject is a smooth gradient. Faster than a cycle
-   crossfade because this one is a response to a click — it has to feel
-   connected to the press, so it is tied to --dur-base rather than to the
-   ambient timing. */
+   same reason the drift can: these four are registered properties. Without
+   this the banner would cut, which would be a strange thing to do in a control
+   whose whole subject is a smooth gradient. Much faster than anything the lamp
+   does, because this one is a response to a click — it has to feel connected
+   to the press, so it is tied to --dur-base rather than to the ambient timing.
+
+   Only the colours and the scrim are listed. The geometry tokens need no
+   hand-off: their animations run in every state, so there is no moment where
+   they stop and a static value has to take over. */
 :root {
   transition:
     --c-hero-from var(--dur-base) var(--ease-settle),
@@ -390,18 +489,133 @@ body {
    banner fully transparent. Declaration and tokens in one file cannot
    desync. The scrim keeps a fallback anyway: it feeds an alpha channel, so
    it is the one value whose absence is silent rather than obvious. */
+/* MOTION. Four layers, painted top to bottom: the scrim, two lamp bodies, and
+   the ramp. The ramp's axis swings and its mid stop swells (the breath) while
+   the two bodies wander on their own loops — 97s, 127s and 173s, coprime with
+   each other and with the three colour loops above, so the whole card never
+   returns to a frame it has already shown.
+
+   The bodies are what make this a lamp rather than a tinting gradient: each
+   is a pool of one of the ramp's own stops, soft-edged, wandering. Both are
+   palette colours at partial alpha, which is what keeps them inside the
+   contrast bound solved for the drift above.
+
+   Each body stays on its own end of the ramp, and that is the whole difference
+   between a lamp and a smear. Sending the warm stop across the cool side was
+   the obvious way to get something visibly moving, and it is wrong: the layers
+   composite in sRGB, where amber over navy averages to a grey-brown that
+   belongs to neither, so the card spent half its loop looking muddy instead of
+   lit. Kept to its own half, a body reads as the ramp pooling and thinning —
+   depth rather than a stain — which is what the glass of a lamp actually does.
+   Their paths still overlap in the middle third, so they pass each other; they
+   just do it where the hues agree.
+
+   Shape is card-local where colour is document state, which is why these three
+   animations live on the element and the colour loops live on :root. The
+   tokens are only ever read by this one background, and the chip's swatch
+   wants the ramp's colours without its geometry — a 12px circle has no room
+   to show a swinging axis, and inheriting one would only desync it. It also
+   means pinning a preset stops the colour drifting but leaves the lamp moving:
+   a fixed mood, not a frozen card. */
 .hero-gradient {
   background-image:
     linear-gradient(
       rgb(0 0 0 / var(--c-hero-scrim, 0.3)),
       rgb(0 0 0 / var(--c-hero-scrim, 0.3))
     ),
+    radial-gradient(
+      56% 116% at var(--hero-lamp-a-x) var(--hero-lamp-a-y),
+      color-mix(in oklab, var(--c-hero-to) 62%, transparent),
+      transparent 74%
+    ),
+    radial-gradient(
+      50% 104% at var(--hero-lamp-b-x) var(--hero-lamp-b-y),
+      color-mix(in oklab, var(--c-hero-from) 66%, transparent),
+      transparent 72%
+    ),
     linear-gradient(
-      110deg,
+      var(--hero-angle),
       var(--c-hero-from),
-      var(--c-hero-via) 52%,
+      var(--c-hero-via) var(--hero-mid),
       var(--c-hero-to)
     );
+  animation:
+    hero-breathe 97s linear infinite,
+    hero-lamp-a 127s linear infinite,
+    hero-lamp-b 173s linear infinite;
+}
+
+/* The breath. The axis and the mid stop move on the same loop but not in
+   phase: the widest band does not arrive at the same moment as the steepest
+   angle, so the card never looks like it is pulsing on a count. Fourteen
+   degrees and fourteen points of travel — enough that the bands visibly
+   breathe over a minute and a half, not enough to see move. */
+@keyframes hero-breathe {
+  0%,
+  100% {
+    --hero-angle: 110deg;
+    --hero-mid: 52%;
+  }
+  25% {
+    --hero-angle: 124deg;
+    --hero-mid: 58%;
+  }
+  50% {
+    --hero-angle: 112deg;
+    --hero-mid: 44%;
+  }
+  75% {
+    --hero-angle: 98deg;
+    --hero-mid: 50%;
+  }
+}
+
+/* Four waypoints each, crossing rather than orbiting, so the two bodies drift
+   past each other at intervals their loop lengths never repeat.
+
+   The warm body (a) keeps to the right of the card and the cool one (b) to the
+   left — their own ends of the ramp, for the reason above — and they overlap
+   only in the middle third. Vertical travel is the wider of the two: the card
+   is short and wide, so a body has to cross most of its height to read as
+   having moved at all, where a third of its width already shows. */
+@keyframes hero-lamp-a {
+  0%,
+  100% {
+    --hero-lamp-a-x: 88%;
+    --hero-lamp-a-y: 22%;
+  }
+  25% {
+    --hero-lamp-a-x: 62%;
+    --hero-lamp-a-y: 76%;
+  }
+  50% {
+    --hero-lamp-a-x: 95%;
+    --hero-lamp-a-y: 48%;
+  }
+  75% {
+    --hero-lamp-a-x: 70%;
+    --hero-lamp-a-y: 12%;
+  }
+}
+
+@keyframes hero-lamp-b {
+  0%,
+  100% {
+    --hero-lamp-b-x: 10%;
+    --hero-lamp-b-y: 74%;
+  }
+  25% {
+    --hero-lamp-b-x: 36%;
+    --hero-lamp-b-y: 18%;
+  }
+  50% {
+    --hero-lamp-b-x: 6%;
+    --hero-lamp-b-y: 40%;
+  }
+  75% {
+    --hero-lamp-b-x: 30%;
+    --hero-lamp-b-y: 88%;
+  }
 }
 
 /* The preset swatch shows the live ramp, unscrimmed, from the same tokens. */
@@ -517,8 +731,9 @@ body {
      its delay. Kill the duration but keep a 220ms delay and a staggered item
      stays invisible for 220ms, then pops — worse than no animation.
    - iteration-count: an `infinite` animation at 0.01ms is not stopped, it is
-     run tens of thousands of times a second. Nothing loops here today, so
-     this line is a guard for the first thing that does.
+     run tens of thousands of times a second. This is what actually stops the
+     lamp: its three geometry loops are infinite, and zeroing their duration
+     alone would spin them instead of settling them.
    - scroll-behavior: smooth scrolling is motion the duration overrides never
      touch, because it isn't an animation or a transition. */
 @media (prefers-reduced-motion: reduce) {
@@ -536,12 +751,18 @@ body {
     transition-delay: 0ms !important;
   }
 
-  /* The Auto cycle is removed outright rather than collapsed. The rule above
-     would hold it on its last keyframe, which is Dawn — so "Auto" would quietly
-     mean a fixed violet ramp, and in particular would stop following light and
-     dark. Dropping the animation hands the banner back to the theme-aware
-     default, which is the honest reading of Auto when motion is unwelcome.
-     Higher specificity than the `*` rule, so it wins between equals. */
+  /* Auto's colour drift is removed outright rather than collapsed. The rule
+     above would hold it on its last keyframe — so "Auto" would quietly mean one
+     fixed violet ramp, carrying Auto's 0.38 scrim, and would stop following
+     light and dark. Dropping the animations hands the banner back to the
+     theme-aware default and the theme's own scrim, which is the honest reading
+     of Auto when motion is unwelcome. Higher specificity than the `*` rule, so
+     it wins between equals.
+
+     The lamp's three geometry loops need no such rule: the `*` rule freezes
+     them on their last keyframe, and every one of those is its token's
+     registered initial value — the still card is the composition the shape
+     tokens describe with nothing running. */
   :root:not([data-hero]) {
     animation: none !important;
   }

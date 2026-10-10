@@ -32,12 +32,15 @@ function replayAnimations() {
   els.forEach((el, i) => el.classList.add(...classes[i]));
 }
 
-/* "auto" is the absence of [data-hero]: nothing is pinned, so the banner
-   drifts through all four ramps on a one-minute loop (the @keyframes live in
-   globals.css, beside the stop values they repeat). Under
-   prefers-reduced-motion the cycle is dropped and Auto falls back to the
-   theme-aware default ramp, which shifts with light/dark. The named ramps are
-   fixed moods and look the same in either theme. */
+/* "auto" is the absence of [data-hero]: nothing is pinned, so the three stops
+   drift continuously on coprime loops and the banner is never on a named ramp
+   at all (the @keyframes live in globals.css, beside the stop values they
+   repeat). Under prefers-reduced-motion the drift is dropped and Auto falls
+   back to the theme-aware default ramp, which shifts with light/dark.
+
+   The named ramps are fixed moods and look the same in either theme — but
+   "fixed" is only the palette. The lamp bodies and the breath keep moving
+   under every preset; pinning stops the colour changing, not the card. */
 const HEROES = ["auto", "dawn", "noon", "dusk", "midnight"] as const;
 type Hero = (typeof HEROES)[number];
 
@@ -50,12 +53,12 @@ const LABEL: Record<Hero, string> = {
 };
 
 /* The menu rows get a word about the ramp rather than a swatch each. A swatch
-   would have to read --c-hero-*, and those resolve to whichever preset is
-   *currently* applied — so five swatches would all paint the same gradient.
+   would have to read --c-hero-*, and those resolve to whatever is *currently*
+   applied — so five swatches would all paint the same gradient.
    Picking crossfades the banner behind the open menu anyway, which is a far
    better preview than a 12px chip could be. */
 const HINT: Record<Hero, string> = {
-  auto: "Drifts through all four",
+  auto: "Never the same twice",
   dawn: "Violet into amber",
   noon: "Bright blue into gold",
   dusk: "The dark-mode default",
@@ -159,9 +162,11 @@ export function BannerControls() {
           aria-label={`Banner gradient: ${LABEL[hero]}`}
           className={`${CHIP} px-2`}
         >
-          {/* The swatch reads the same custom properties the banner does, so it
+          {/* The swatch reads the same colour properties the banner does, so it
               always shows the live ramp with nothing to keep in sync — in Auto
-              that means it drifts along with the cycle. */}
+              that means it drifts along with it. Colours only: the banner's
+              geometry tokens stay with the banner, since a 12px circle has no
+              room to show a swinging axis. */}
           <span
             aria-hidden="true"
             className="hero-swatch size-3 shrink-0 rounded-full border border-white/25"
