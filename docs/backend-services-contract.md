@@ -14,6 +14,7 @@ Companion to `docs/system2-rag-contract.md` (Neon tables, embedding API, MCP). *
 | Orchestrator (LangGraph: assess + ask graphs; contract `docs/orchestrator-contract.md`) | `amd/orchestrator/` | 8085 | orchestrator agent |
 | Model gateway (LiteLLM: `system1` / `system2` / `system2-vision` / `embed`) | `amd/gateway/` | 4000 | gateway agent |
 | llama-server (System 2's model; the gateway's `LLAMA_URL` upstream, never in compose) | n/a | 8080 (tunnel 18080) | teammate |
+| Web console (Next.js dev server, `node:24` image; reads the backend via `BACKEND_URL`) | `web/` | 3000 | web agent |
 | Postgres + pgvector (local stand-in for Neon) | `db/` | 5433 | pgvector agent |
 
 Inside docker-compose, services reach each other by service name (`http://system1:8082`), never `localhost`.
