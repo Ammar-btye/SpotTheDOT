@@ -97,7 +97,9 @@ Setup on the AMD box, from `amd/system2`:
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ```
 
-Start it, from `amd/system2` (one command; the key must be at least 16 characters and is never logged):
+Start it, from `amd/system2` (one command). The key must be at least 16 printable ASCII characters with no leading or
+trailing whitespace (watch for a trailing space or tab in a `.env` line), and it is never logged. The server compares
+keys in constant time (`hmac.compare_digest`).
 
 ```bash
 AMD_API_KEY=your-shared-secret uv run --no-project --with-requirements requirements.txt python scripts/serve.py

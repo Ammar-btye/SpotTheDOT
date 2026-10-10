@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import httpx  # noqa: E402
+import pytest  # noqa: E402
 
 from analyst.api import FIXTURES, KEY_HEADER  # noqa: E402
 from analyst.contract import AssessResponse  # noqa: E402
@@ -58,6 +59,17 @@ def test_serve_refuses_short_key():
     assert r.returncode == 2, (r.returncode, r.stderr)
     assert "AMD_API_KEY" in r.stderr
     assert "short-key" not in r.stderr + r.stdout
+
+
+@pytest.mark.parametrize("bad", [" " * 20, TEST_KEY + " ", "  " + TEST_KEY, TEST_KEY + "\t", "clé-secrète-0123456789"],
+                         ids=["whitespace_only", "trail_space", "lead_space", "trail_tab", "non_ascii"])
+def test_serve_refuses_unusable_key(bad):
+    r = subprocess.run([sys.executable, str(SERVE), "--port", str(_free_port())],
+                       capture_output=True, text=True, timeout=30, env=_env(bad))
+    assert r.returncode == 2, (r.returncode, r.stderr)
+    assert "AMD_API_KEY" in r.stderr
+    out = r.stdout + r.stderr
+    assert repr(bad) not in out and (not bad.strip() or bad.strip() not in out)
 
 
 def test_serve_end_to_end():

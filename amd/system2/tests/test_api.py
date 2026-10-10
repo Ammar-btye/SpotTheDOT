@@ -121,6 +121,27 @@ def test_create_app_requires_key(monkeypatch):
     assert "short" not in str(e2.value) and "16" in str(e.value)
 
 
+@pytest.mark.parametrize("bad", [
+    " " * 16, " " * 40, "\t" * 20, " " + TEST_KEY, TEST_KEY + " ", TEST_KEY + "\n", "\t" + TEST_KEY,
+    "clé-secrète-0123456789", TEST_KEY[:16] + "\x00" + TEST_KEY[16:], TEST_KEY[:16] + "\x7f" + TEST_KEY[16:],
+    TEST_KEY[:16] + "\t" + TEST_KEY[16:],
+], ids=["ws16", "ws40", "tabs", "lead_space", "trail_space", "trail_newline", "lead_tab", "non_ascii", "nul", "del",
+        "inner_tab"])
+def test_create_app_rejects_unusable_key(bad):
+    with pytest.raises(RuntimeError) as e:
+        create_app(api_key=bad)
+    msg = str(e.value)
+    assert "AMD_API_KEY" in msg and bad not in msg and repr(bad) not in msg
+    assert not bad.strip() or bad.strip() not in msg           # whitespace-only keys have nothing to leak
+
+
+def test_key_with_inner_space_works():
+    key = "correct horse battery staple 42"
+    c = TestClient(create_app(api_key=key))
+    assert c.post("/v1/assess", json=_req(), headers=_h(key)).status_code == 200
+    assert c.post("/v1/assess", json=_req(), headers=_h(key[:-1])).status_code == 401
+
+
 # ── fixture index rules ──────────────────────────────────────────────────────
 
 def _write_fixture(d: Path, name: str, flag_id: str = "flag:act-A0009") -> None:

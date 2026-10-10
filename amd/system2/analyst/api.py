@@ -57,11 +57,37 @@ def load_fixtures(fixtures_dir: Path = FIXTURES) -> List[Fixture]:
     return out
 
 
+def key_problem(key: str) -> Optional[str]:
+    """Why `key` cannot be the shared secret, or None. Never includes the key itself.
+
+    Header values reach the app as latin-1 text with surrounding whitespace stripped (h11), so a key with padding,
+    non-ASCII or control characters would start fine and then fail every real request.
+    """
+    if len(key) < MIN_KEY_LEN:
+        return "it has fewer than %d characters" % MIN_KEY_LEN
+    if not key.strip():
+        return "it is only whitespace"
+    if key != key.strip():
+        return "it has leading or trailing whitespace"
+    if not key.isascii():
+        return "it has non-ASCII characters"
+    if not key.isprintable():
+        return "it has non-printable characters"
+    return None
+
+
+def check_key(key: str) -> None:
+    """RuntimeError unless `key` is a usable shared secret; the message never contains the key."""
+    why = key_problem(key)
+    if why is not None:
+        raise RuntimeError("AMD_API_KEY must be a secret of at least %d printable ASCII characters with no surrounding "
+                           "whitespace; %s (the key is never logged)" % (MIN_KEY_LEN, why))
+
+
 def create_app(api_key: Optional[str] = None, fixtures_dir: Path = FIXTURES) -> FastAPI:
     key = api_key if api_key is not None else os.environ.get("AMD_API_KEY", "")
-    if len(key) < MIN_KEY_LEN:
-        raise RuntimeError("AMD_API_KEY must be set to a secret of at least %d characters" % MIN_KEY_LEN)
-    expected = key.encode("utf-8")
+    check_key(key)
+    expected = key.encode("ascii")
 
     fixtures = load_fixtures(fixtures_dir)
     by_flag: Dict[str, Tuple[AssessRequest, AssessResponse]] = {}

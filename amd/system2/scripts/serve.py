@@ -6,7 +6,8 @@
 
 Binds 127.0.0.1 by default (T-01-11): remote callers reach it through an SSH tunnel
 (`ssh -L 8000:127.0.0.1:8000 <box>`), never a public interface. Refuses to start (exit 2, before binding any port)
-unless AMD_API_KEY holds a shared secret of at least MIN_KEY_LEN characters (T-01-12). The key is never logged.
+unless AMD_API_KEY holds a shared secret of at least MIN_KEY_LEN printable ASCII characters with no surrounding
+whitespace (T-01-12, analyst.api.check_key). The key is never logged.
 """
 import argparse
 import os
@@ -17,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import uvicorn  # noqa: E402
 
-from analyst.api import FIXTURES, MIN_KEY_LEN, create_app  # noqa: E402
+from analyst.api import FIXTURES, check_key, create_app  # noqa: E402
 from analyst.contract import CONTRACT_VERSION  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,9 +37,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None):
     args = build_parser().parse_args(argv)
     key = os.environ.get("AMD_API_KEY", "")
-    if len(key) < MIN_KEY_LEN:
-        print("ERROR: set AMD_API_KEY to a shared secret of at least %d characters (it is never logged)"
-              % MIN_KEY_LEN, file=sys.stderr)
+    try:
+        check_key(key)                                    # same rule as create_app; the message never has the key
+    except RuntimeError as e:
+        print("ERROR: %s" % e, file=sys.stderr)
         sys.exit(2)
     if args.host not in LOOPBACK:
         print("WARNING: binding %s exposes the API beyond localhost; prefer an SSH tunnel" % args.host,
