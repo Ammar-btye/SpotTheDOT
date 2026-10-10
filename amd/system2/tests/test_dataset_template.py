@@ -145,3 +145,76 @@ def test_holdouts_match_system1_default_fold():
     from triage.kit import load_kit
     from analyst.dataset import HOLDOUT_MISSIONS
     assert set(make_folds(load_kit(), 20261010)[2]) == set(HOLDOUT_MISSIONS)
+
+
+def test_future_mission_outcome_even_with_valid_hash_rejected(tmp_path):
+    load, _ = api()
+    from analyst.dataset import evidence_item, source_tables
+    obj = raw()
+    obj.pop('manifest', None)
+    c = next(c for c in obj['cases'] if c['category'] == 'navigation')
+    fact = evidence_item('mission:future', 'missions', source_tables()['missions'][c['mission_id']])
+    c['request']['context']['asset_history'] = [fact]
+    c['source_lineage'].extend(fact['provenance']['source_rows'])
+    with pytest.raises(ValueError, match='not available'):
+        load(save(tmp_path, obj))
+
+
+def test_static_policy_passage_and_unicode_content(tmp_path):
+    load, template = api()
+    import hashlib
+    obj = raw()
+    obj.pop('manifest', None)
+    c = obj['cases'][0]
+    path = 'docs/backend-services-contract.md'
+    source = (ROOT / path).read_bytes()
+    passage = next(line for line in source.decode('utf-8').splitlines() if '→' in line)
+    item = {'id': 'A–点', 'text': passage, 'provenance': {
+        'kind': 'static_passage', 'path': path, 'source_hash': hashlib.sha256(source).hexdigest()}}
+    c['request']['context']['policy'] = [item]
+    out = template(load(save(tmp_path, obj))[0].prepared)
+    assert out['evidence'][0] == {'claim': passage, 'ids': ['A–点']}
+    item['text'] += ' forged outcome'
+    with pytest.raises(ValueError): load(save(tmp_path, obj))
+
+
+def test_empty_evidence_remains_safe_without_fabricated_headline(tmp_path):
+    load, template = api()
+    obj = raw()
+    obj.pop('manifest', None)
+    c = obj['cases'][0]
+    c['request']['context']['facts'] = []
+    c['request']['context']['citation_ids'] = []
+    c['source_lineage'] = []
+    out = template(load(save(tmp_path, obj))[0].prepared)
+    assert out['insufficient_context'] and out['evidence'] == []
+
+
+def test_same_spelling_required_for_citation_ids(tmp_path):
+    load, template = api()
+    obj = raw()
+    obj.pop('manifest', None)
+    c = obj['cases'][0]
+    c['request']['context']['citation_ids'] = ['f1']
+    assert template(load(save(tmp_path, obj))[0].prepared)['insufficient_context']
+
+
+def test_source_rows_canonical_order_and_identical_duplicates(tmp_path):
+    load, _ = api()
+    from analyst.dataset import dataset_manifest, row_fact, source_tables
+    obj = raw()
+    obj.pop('manifest', None)
+    c = next(c for c in obj['cases'] if len(c['source_lineage']) > 1)
+    obj['cases'] = [c]
+    refs = copy.deepcopy(c['source_lineage'])
+    tables = source_tables()
+    fact = {'id': 'F1', 'fact': ' | '.join(row_fact(r['table'], tables[r['table']][r['row_id']]) for r in refs),
+            'provenance': {'kind': 'dynamic', 'source_rows': refs}}
+    c['request']['context']['facts'] = [fact]
+    c['request']['context']['citation_ids'] = ['F1']
+    a = dataset_manifest(load(save(tmp_path, obj)))
+    refs.reverse()
+    b = dataset_manifest(load(save(tmp_path, obj)))
+    assert a == b
+    refs.append(copy.deepcopy(refs[0]))
+    assert a == dataset_manifest(load(save(tmp_path, obj)))

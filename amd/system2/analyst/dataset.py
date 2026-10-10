@@ -152,6 +152,27 @@ def _check_item(item, as_of, tables):
         raise ValueError('citation id must be nonblank; spelling is never normalized')
 
 
+def _canonical_item(item):
+    """Canonical row order and identical duplicates without mutating captures."""
+    if not isinstance(item, dict):
+        raise ValueError('evidence must be an object')
+    item = json.loads(canonical_bytes(item))
+    provenance = item.get('provenance')
+    if isinstance(provenance, dict) and isinstance(provenance.get('source_rows'), list):
+        rows = provenance['source_rows']
+        if any(not isinstance(row, dict) or not isinstance(row.get('table'), str)
+               or not isinstance(row.get('row_id'), str) for row in rows):
+            raise ValueError('invalid source row')
+        unique = {}
+        for row in rows:
+            key = (row['table'], row['row_id'])
+            if key in unique and unique[key] != row:
+                raise ValueError('conflicting duplicate source row')
+            unique[key] = row
+        provenance['source_rows'] = [unique[key] for key in sorted(unique)]
+    return item
+
+
 @dataclass(frozen=True)
 class SavedCase:
     case_id: str
@@ -226,6 +247,7 @@ def validate_dataset(value) -> tuple[SavedCase, ...]:
                 raise ValueError('evidence section must be a list')
             unique = {}
             for item in items:
+                item = _canonical_item(item)
                 _check_item(item, as_of, tables)
                 item_bytes = canonical_bytes(item)
                 if item['id'] in seen and seen[item['id']] != item_bytes:
@@ -274,19 +296,19 @@ def load_dataset(path: str | Path) -> tuple[SavedCase, ...]:
 
 def seed_dataset() -> dict:
     """Deterministic offline export, separate from backend's runtime retrieval."""
-    import ast
     import sys
     sys.path.insert(0, str(ROOT / 'amd/system1'))
+    sys.path.insert(0, str(ROOT / 'amd/mcp'))
     from triage.kit import load_kit
     from triage.events import action_event
     from triage.policy import label_action
+    from spot_mcp import domain
 
     kit = load_kit(KIT)
     tables = source_tables()
-    domain = ast.parse((ROOT / 'amd/mcp/spot_mcp/domain.py').read_text(encoding='utf-8'))
-    assignment = next(n for n in domain.body if isinstance(n, ast.AnnAssign)
-                      and isinstance(n.target, ast.Name) and n.target.id == 'ALLOWED_ACTIONS')
-    vocabulary = ast.literal_eval(assignment.value)
+    if domain._POLICY_PATH.resolve() != (ROOT / 'amd/system1/triage/policy.py').resolve():
+        raise ValueError('seed export requires the checked-in policy, not an environment override')
+    vocabulary = domain.ALLOWED_ACTIONS
     selected = {}
     for action in kit.actions:
         if action['mission_id'] in HOLDOUT_MISSIONS:
@@ -294,14 +316,13 @@ def seed_dataset() -> dict:
         event = action_event(action, kit.missions[action['mission_id']], kit.locations[action['location_id']],
                              kit.assets[action['asset_id']], kit.readings.get(action['action_id']),
                              kit.anomalies.get(action['action_id']), 'kit')
-        category = label_action(event)['category']
+        labelled = label_action(event)
+        category = labelled['category']
         if category in ('equipment', 'robot_health', 'navigation', 'data_quality'):
-            selected.setdefault(category, action)
-    defaults = {'equipment': 'DISPATCH_TECHNICIAN', 'robot_health': 'RETURN_TO_DOCK',
-                'navigation': 'REINSPECT_NOW', 'data_quality': 'REINSPECT_NOW', 'mission': 'REVIEW_MISSION'}
+            selected.setdefault(category, (action, labelled))
     records = []
     for index, category in enumerate(sorted(selected), 1):
-        action = selected[category]
+        action, labelled = selected[category]
         row = tables['actions'][action['action_id']]
         facts = [evidence_item('F1', 'actions', row)]
         for table in ('readings', 'anomalies'):
@@ -309,11 +330,14 @@ def seed_dataset() -> dict:
             for source in sorted(matches, key=lambda r: r[KEYS[table]]):
                 facts.append(evidence_item('F%d' % (len(facts) + 1), table, source))
         as_of = max(r['available_at'] for f in facts for r in f['provenance']['source_rows'])
+        action_facts = {**action, **(kit.anomalies.get(action['action_id']) or {}),
+                        'environment': kit.locations[action['location_id']]['environment']}
+        suggested = domain.suggested_action(category, labelled['priority'], action_facts)
         records.append(_seed_record(index, category, action['mission_id'], as_of, facts,
-                                    vocabulary[category], defaults[category]))
+                                    vocabulary[category], suggested))
     mission = next(r for key, r in sorted(tables['missions'].items()) if key not in HOLDOUT_MISSIONS)
     records.append(_seed_record(5, 'mission', mission['mission_id'], mission['end_time'],
-                               [evidence_item('F1', 'missions', mission)], vocabulary['mission'], defaults['mission']))
+                               [evidence_item('F1', 'missions', mission)], vocabulary['mission'], 'REVIEW_MISSION'))
     records.append(_seed_record(6, 'insufficient_context', mission['mission_id'], mission['start_time'], [],
                                {'MANUAL_REVIEW': 'request operator review'}, 'MANUAL_REVIEW'))
     cases = validate_dataset({'cases': records})

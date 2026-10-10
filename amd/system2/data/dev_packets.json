@@ -145,7 +145,7 @@
           ],
           "missing": [],
           "question": "What needs operator attention for this equipment event?",
-          "suggested_action": "DISPATCH_TECHNICIAN"
+          "suggested_action": "SCHEDULE_MAINTENANCE"
         },
         "flag": {
           "category": "equipment"
@@ -323,7 +323,7 @@
           ],
           "missing": [],
           "question": "What needs operator attention for this navigation event?",
-          "suggested_action": "REINSPECT_NOW"
+          "suggested_action": "CLEAR_PATH"
         },
         "flag": {
           "category": "navigation"
@@ -389,7 +389,7 @@
           ],
           "missing": [],
           "question": "What needs operator attention for this robot_health event?",
-          "suggested_action": "RETURN_TO_DOCK"
+          "suggested_action": "CHARGE_BEFORE_NEXT_MISSION"
         },
         "flag": {
           "category": "robot_health"
@@ -409,7 +409,7 @@
   ],
   "manifest": {
     "case_count": 6,
-    "content_hash": "1b1ed4375b4476111601c279e36396fc3e88753c055e0fe60d982301039d8c02",
+    "content_hash": "d7cafc688b6fcf12b7e58e4d97c08383090446b793bfb07ea72f5723de9ee8f1",
     "holdout_fold": 2,
     "holdout_missions": [
       "M006",
