@@ -14,6 +14,7 @@
 # mcp        8090  local, hybrid, neon      MCP context server for System 2 (streamable HTTP /mcp)
 # backend    8000  local, hybrid, neon      FastAPI dashboard API (/api/v1, /docs). ADMIN_TOKEN (header
 #                                           X-Admin-Token) guards /ops, /replay, POST /events; CORS_ORIGINS only
+# web        3000  local, hybrid, neon, frontend  Next.js dashboard; reads backend via /api/dashboard
 # system2    8083  local, hybrid, neon, system2  Authenticated System 2 /v1/assess (contract 2026-10-10.backend.2):
 #                                           packet-grounded stub (model=stub) by default; live checked pipeline when
 #                                           SYSTEM2_LLAMA_URL is set (the gateway, http://gateway:4000, or llama-server
@@ -75,6 +76,32 @@ x-embed-env: &embed-env   # contract §1: every embedding client and the server 
   EMBED_DIM: ${EMBED_DIM:-1024}
 
 services:
+  web:
+    <<: *service
+    image: node:24
+    profiles: [local, hybrid, neon, frontend]
+    working_dir: /app
+    command: ["sh", "-c", "npm ci && npm run dev -- --hostname 0.0.0.0"]
+    environment:
+      BACKEND_URL: ${WEB_BACKEND_URL:-http://backend:8000/api/v1}
+      NEXT_TELEMETRY_DISABLED: "1"
+      FEATURE_FLAG_DETAILS: ${FEATURE_FLAG_DETAILS:-true}
+      FEATURE_FLAG_ACTIONS: ${FEATURE_FLAG_ACTIONS:-true}
+      FEATURE_FLAG_EXPLANATIONS: ${FEATURE_FLAG_EXPLANATIONS:-true}
+    ports: ["${BIND_ADDR:-127.0.0.1}:3000:3000"]
+    volumes:
+      - "./web:/app"
+      - "web-node-modules:/app/node_modules"
+      - "web-next:/app/.next"
+    depends_on:
+      backend: {condition: service_healthy, required: false}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 10s
+      start_period: 120s
+      retries: 5
+
   # ── data ──────────────────────────────────────────────────────────────────────────────────────
   db:
     image: pgvector/pgvector:pg17
@@ -334,6 +361,8 @@ services:
     ports: ["${BIND_ADDR:-127.0.0.1}:8000:8000"]
 
 volumes:
+  web-node-modules: {}
+  web-next: {}
   pgdata: {}
   hf-cache:
     name: ${HF_CACHE_VOLUME:-hf-cache}   # shared with `docker run -v hf-cache:...` in the service READMEs
