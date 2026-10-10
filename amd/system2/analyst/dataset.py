@@ -283,6 +283,9 @@ def validate_dataset(value) -> tuple[SavedCase, ...]:
         prepared = normalize_packet(BackendAssessRequest.model_validate(request))
         if record['category'] == 'insufficient_context' and not prepared.insufficient_context:
             raise ValueError('insufficient-context case must be genuinely missing evidence')
+        if record['category'] != 'insufficient_context' and prepared.insufficient_context:
+            # else the harness silently moves it out of the sufficient denominators while it keeps its label
+            raise ValueError('case category does not match packet sufficiency')
         cases.append(SavedCase(record['case_id'], record['category'], record['mission_id'], record['as_of'],
                                record['split'], canonical_bytes(request), canonical_bytes(lineage),
                                canonical_bytes(record.get('reference'))))

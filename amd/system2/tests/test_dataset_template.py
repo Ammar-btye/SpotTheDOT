@@ -186,6 +186,9 @@ def test_empty_evidence_remains_safe_without_fabricated_headline(tmp_path):
     c['request']['context']['facts'] = []
     c['request']['context']['citation_ids'] = []
     c['source_lineage'] = []
+    with pytest.raises(ValueError, match='sufficiency'):    # a sufficient-category label must not hide it
+        load(save(tmp_path, obj))
+    c['category'] = c['request']['flag']['category'] = 'insufficient_context'
     out = template(load(save(tmp_path, obj))[0].prepared)
     assert out['insufficient_context'] and out['evidence'] == []
 
@@ -196,7 +199,22 @@ def test_same_spelling_required_for_citation_ids(tmp_path):
     obj.pop('manifest', None)
     c = obj['cases'][0]
     c['request']['context']['citation_ids'] = ['f1']
+    with pytest.raises(ValueError, match='sufficiency'):
+        load(save(tmp_path, obj))
+    c['category'] = c['request']['flag']['category'] = 'insufficient_context'
     assert template(load(save(tmp_path, obj))[0].prepared)['insufficient_context']
+
+
+@pytest.mark.parametrize('category', ['equipment', 'robot_health', 'navigation', 'data_quality', 'mission'])
+def test_sufficient_category_with_insufficient_packet_rejected(tmp_path, category):
+    """Honest denominators: a labelled case cannot silently move into guarded_insufficient."""
+    load, _ = api()
+    obj = raw()
+    obj.pop('manifest', None)
+    c = next(c for c in obj['cases'] if c['category'] == category)
+    c['request']['context']['gaps'] = ['anything']
+    with pytest.raises(ValueError, match='sufficiency'):
+        load(save(tmp_path, obj))
 
 
 def test_source_rows_canonical_order_and_identical_duplicates(tmp_path):
