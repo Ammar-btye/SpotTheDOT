@@ -4,8 +4,9 @@
     python scripts/finetune.py --out checkpoints/smoke --epochs 1 --train-limit 200 --bench-limit 120
     python scripts/finetune.py --out checkpoints/run1 --push-to-hub <user>/laya-spot-triage
 
-Built on Laya's own training loop (`laya.train.train_model`, pinned laya==0.4.1), the same code the
-official fine-tuning notebook runs, so the result loads with `laya.load(<dir>)`. What this adds:
+Training runs in triage/trainer.py: Laya's own batches and losses (pinned laya==0.4.1) with warmup,
+layer-wise LR decay, optional LoRA (Hugging Face PEFT), class rebalancing, early stopping and a time
+budget. Checkpoints load with `laya.load(<dir>)` (LoRA is merged in). What this script adds:
 - after EVERY epoch: refit calibration temperatures on data/calib.jsonl (held-out synthetic missions,
   not a random item split), then run the whole benchmark (data/benchmark.jsonl) and save it to
   <out>/epoch_NN/ (report.md, metrics.json, predictions.jsonl);
@@ -19,6 +20,7 @@ slightly optimistic; the final-epoch score is reported too.
 """
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -30,13 +32,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from laya.calibrate import fit_temperature_map                                   # noqa: E402
 from laya.common import uses_parallel_layout                                     # noqa: E402
-from laya.train import (TrainConfig, calibration_records, items_from_rows,       # noqa: E402
-                        load_checkpoint, optimizer_updates, prior_collapse_message, resolve_device,
-                        save_checkpoint, train_model, update_budget_message)
+from laya.train import (items_from_rows, load_checkpoint,                       # noqa: E402
+                        prior_collapse_message, resolve_device)
 
 from scripts.benchmark import read_jsonl, run_benchmark, stratified_limit        # noqa: E402
 from triage.harness import LayaRunner                                            # noqa: E402
-from triage.questions import QUESTIONS                                           # noqa: E402
+from triage.questions import POSITIVE, QUESTIONS                                 # noqa: E402
+from triage.trainer import (LoopConfig, apply_lora, items_with_qids,             # noqa: E402
+                            oversample_positives, save_laya, train_loop)
 
 ROOT = Path(__file__).resolve().parents[1]
 MIN_UPDATES = 350
@@ -63,8 +66,24 @@ def select(summary: dict, metric: str) -> float:
     return summary.get(metric, {}).get("mean_macro_f1", float("nan"))
 
 
+def strategy_line(args) -> str:
+    parts = ["LoRA r=%d alpha=%d on %s" % (args.lora_r, args.lora_alpha, args.lora_targets) if args.lora
+             else ("frozen encoder" if args.freeze_encoder else "full fine-tune"),
+             "enc lr %g, head lr %g" % (args.encoder_lr, args.head_lr), "warmup %g" % args.warmup_ratio,
+             "%s schedule" % args.schedule, "llrd %g" % args.llrd, "loss %s" % args.loss,
+             "label smoothing %g" % args.label_smoothing]
+    if args.oversample:
+        parts.append("oversample %s" % args.oversample)
+    if args.patience:
+        parts.append("patience %d" % args.patience)
+    if args.max_minutes:
+        parts.append("budget %g min" % args.max_minutes)
+    return ", ".join(parts)
+
+
 def write_training_report(path: Path, history: list, best_epoch: int, args, budget: str):
     L = ["# Laya fine-tuning report", "", "_%s · base `%s` · %s_" % (time.strftime("%Y-%m-%d %H:%M"), args.base, budget), "",
+         "**Strategy:** %s" % strategy_line(args), "",
          "Epoch 00 is the untuned model. Scores are mean macro-F1 over questions (decision accuracy in parentheses).", "",
          "| Epoch | Train loss | Real | Synthetic | Counterfactual | Overall | Escalate recall (real) | Will-fail recall (real) |",
          "|---|---|---|---|---|---|---|---|"]
@@ -78,7 +97,7 @@ def write_training_report(path: Path, history: list, best_epoch: int, args, budg
         def rec(q):
             v = s.get("real", {}).get(q, {}).get("recall")
             return "%.1f%%" % (100 * v) if v is not None and v == v else "–"
-        mark = " **best**" if h["epoch"] == best_epoch else ""
+        mark = (" **best**" if h["epoch"] == best_epoch else "") + (" (partial)" if h.get("partial") else "")
         L.append("| %02d%s | %s | %s | %s | %s | %s | %s | %s |" % (
             h["epoch"], mark, "%.4f" % h["loss"] if h["loss"] is not None else "–", cell("real"), cell("synthetic"),
             cell("counterfactual"), cell("overall"), rec("escalate"), rec("will_fail")))
@@ -108,30 +127,62 @@ def model_card(repo_id: str, base: str, history: list, best_epoch: int) -> str:
     ]) + "\n"
 
 
+def parse_oversample(spec: str) -> dict:
+    """'will_fail=2,anomaly_expected=1.5' -> {'will_fail': 2.0, 'anomaly_expected': 1.5}"""
+    out = {}
+    for part in filter(None, (p.strip() for p in (spec or "").split(","))):
+        q, f = part.split("=")
+        if q not in POSITIVE:
+            raise SystemExit("--oversample: %r is not a yes/no question (%s)" % (q, ", ".join(POSITIVE)))
+        out[q] = float(f)
+    return out
+
+
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--base", default="convaiinnovations/laya")
+    ap = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    ap.add_argument("--base", default="convaiinnovations/laya",
+                    help="HF id or a local checkpoint dir (e.g. checkpoints/run2/best to continue training)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--data-dir", default=str(ROOT / "data"))
     ap.add_argument("--device", default="auto")
-    ap.add_argument("--epochs", type=int, default=6)
-    ap.add_argument("--micro-batch", type=int, default=8)
-    ap.add_argument("--grad-accum", type=int, default=4)
-    ap.add_argument("--encoder-lr", type=float, default=2e-5)
-    ap.add_argument("--head-lr", type=float, default=1e-4)
-    ap.add_argument("--weight-decay", type=float, default=0.01)
-    ap.add_argument("--loss", default="soft-ce", choices=["soft-ce", "rlcd"])
-    ap.add_argument("--label-smoothing", type=float, default=0.05)
-    ap.add_argument("--freeze-encoder", action="store_true", help="train the decision head only (fast, weaker)")
-    ap.add_argument("--no-amp", action="store_true", help="disable fp16 autocast (use if ROCm gives NaNs)")
-    ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--train-limit", type=int, default=0, help="use N training rows (smoke test)")
-    ap.add_argument("--bench-limit", type=int, default=0, help="stratified N benchmark rows per epoch (faster)")
-    ap.add_argument("--calib-limit", type=int, default=0, help="use N calibration rows (smoke test)")
-    ap.add_argument("--batch-size", type=int, default=16, help="benchmark inference batch")
-    ap.add_argument("--select-metric", default="overall", choices=["overall", "real", "synthetic", "counterfactual"])
-    ap.add_argument("--push-to-hub", default=None, help="HF repo id to upload the best checkpoint to")
+    g = ap.add_argument_group("schedule")
+    g.add_argument("--epochs", type=int, default=6)
+    g.add_argument("--micro-batch", type=int, default=8)
+    g.add_argument("--grad-accum", type=int, default=4)
+    g.add_argument("--encoder-lr", type=float, default=2e-5, help="peak LR of the TOP encoder layer")
+    g.add_argument("--head-lr", type=float, default=1e-4)
+    g.add_argument("--warmup-ratio", type=float, default=0.06, help="fraction of updates spent warming up")
+    g.add_argument("--schedule", default="cosine", choices=["cosine", "linear", "constant"])
+    g.add_argument("--min-lr-ratio", type=float, default=0.05, help="LR floor as a fraction of peak")
+    g.add_argument("--llrd", type=float, default=0.95, help="layer-wise LR decay (1.0 = off)")
+    g.add_argument("--weight-decay", type=float, default=0.01)
+    g.add_argument("--max-minutes", type=float, default=0, help="wall-clock budget for the whole run (0 = none)")
+    g.add_argument("--patience", type=int, default=0, help="stop after N evals without improvement (0 = off)")
+    g = ap.add_argument_group("objective / data")
+    g.add_argument("--loss", default="soft-ce", choices=["soft-ce", "rlcd"])
+    g.add_argument("--label-smoothing", type=float, default=0.05)
+    g.add_argument("--oversample", default="", help="repeat positives of yes/no questions, e.g. will_fail=2,anomaly_expected=2")
+    g = ap.add_argument_group("parameter-efficient / regularisation")
+    g.add_argument("--lora", action="store_true", help="LoRA adapters on the encoder (Hugging Face PEFT); head trains fully")
+    g.add_argument("--lora-r", type=int, default=16)
+    g.add_argument("--lora-alpha", type=int, default=32)
+    g.add_argument("--lora-dropout", type=float, default=0.05)
+    g.add_argument("--lora-targets", default="Wqkv,Wo,Wi")
+    g.add_argument("--freeze-encoder", action="store_true", help="train the decision head only (fast, weaker)")
+    g.add_argument("--grad-checkpointing", action="store_true", help="less memory, ~30%% slower")
+    g = ap.add_argument_group("runtime")
+    g.add_argument("--no-amp", action="store_true", help="fp32 in training AND benchmarking (NaNs or GEMM errors)")
+    g.add_argument("--seed", type=int, default=0)
+    g.add_argument("--train-limit", type=int, default=0, help="use N training rows (smoke test)")
+    g.add_argument("--bench-limit", type=int, default=0, help="stratified N benchmark rows per epoch (faster)")
+    g.add_argument("--calib-limit", type=int, default=0, help="use N calibration rows (smoke test)")
+    g.add_argument("--batch-size", type=int, default=16, help="benchmark inference batch")
+    g.add_argument("--select-metric", default="overall", choices=["overall", "real", "synthetic", "counterfactual"])
+    g.add_argument("--push-to-hub", default=None, help="HF repo id to upload the best checkpoint to")
     args = ap.parse_args()
+    if args.lora and args.freeze_encoder:
+        raise SystemExit("--lora and --freeze-encoder are mutually exclusive")
+    t_start = time.time()
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -147,30 +198,38 @@ def main():
 
     dev = resolve_device(args.device)
     model, tok, cfg = load_checkpoint(args.base)
+    if args.lora:
+        apply_lora(model, args.lora_r, args.lora_alpha, args.lora_dropout, args.lora_targets.split(","))
     model.to(dev)
     max_len, head_max_len = cfg.get("max_len", 512), cfg.get("head_max_len", 192)
     parallel = uses_parallel_layout(cfg)
-    config = TrainConfig(epochs=args.epochs, micro_batch=args.micro_batch, grad_accum=args.grad_accum,
-                         encoder_lr=args.encoder_lr, head_lr=args.head_lr, weight_decay=args.weight_decay,
-                         loss=args.loss, label_smoothing=args.label_smoothing, shuffle_options=("choice",),
-                         freeze_encoder=args.freeze_encoder, seed=args.seed,
-                         amp=False if args.no_amp else None, log_every=50)
-    config.validate()
+    loop_cfg = LoopConfig(epochs=args.epochs, micro_batch=args.micro_batch, grad_accum=args.grad_accum,
+                          encoder_lr=args.encoder_lr, head_lr=args.head_lr, warmup_ratio=args.warmup_ratio,
+                          schedule=args.schedule, min_lr_ratio=args.min_lr_ratio, llrd=args.llrd,
+                          weight_decay=args.weight_decay, loss=args.loss, freeze_encoder=args.freeze_encoder,
+                          amp=not args.no_amp, grad_checkpointing=args.grad_checkpointing, seed=args.seed)
+    loop_cfg.validate()
 
-    train_items, skipped = items_from_rows(tok, train_rows, max_len, head_max_len, args.label_smoothing)
+    train_items, skipped = items_with_qids(tok, train_rows, max_len, head_max_len, args.label_smoothing)
+    added = {}
+    if args.oversample:
+        train_items, added = oversample_positives(train_items, parse_oversample(args.oversample), POSITIVE, args.seed)
     calib_items, cskipped = items_from_rows(tok, calib_rows, max_len, head_max_len, 0.0)
-    budget = update_budget_message(len(train_items), config)
+    updates = math.ceil(math.ceil(len(train_items) / args.micro_batch) / args.grad_accum) * args.epochs
+    budget = "%d train items%s, effective batch %d, %d optimizer updates over %d epoch(s)" % (
+        len(train_items), (" (+%s oversampled)" % added) if added else "", args.micro_batch * args.grad_accum,
+        updates, args.epochs)
     print("device %s | train items %d (skipped %s) | calib items %d (skipped %s) | benchmark rows %d"
           % (dev, len(train_items), skipped, len(calib_items), cskipped, len(bench_rows)), flush=True)
+    print("strategy: %s" % strategy_line(args), flush=True)
     print(budget, flush=True)
-    updates = optimizer_updates(len(train_items), config.micro_batch, config.grad_accum, config.epochs)
     if updates < MIN_UPDATES and not args.train_limit:
         print("WARNING: only %d optimizer updates; small runs can collapse to the class prior (laya #963). "
               "Raise --epochs or lower --grad-accum." % updates, flush=True)
 
-    runner = LayaRunner(model, tok, cfg, dev, name=args.base)
-    history, best = [], {"score": float("-inf"), "epoch": None}
-    run_meta = {"args": vars(args), "train_config": asdict(config), "budget": budget, "device": str(dev)}
+    runner = LayaRunner(model, tok, cfg, dev, name=args.base, amp=False if args.no_amp else None)
+    history, best = [], {"score": float("-inf"), "epoch": None, "stale": 0}
+    run_meta = {"args": vars(args), "loop_config": asdict(loop_cfg), "budget": budget, "device": str(dev)}
     (out / "run_config.json").write_text(json.dumps(run_meta, indent=2), encoding="utf-8")
 
     def save(path: Path, temps):
@@ -180,17 +239,20 @@ def main():
         if temps.get("temperature_by_options"):
             out_cfg["temperature_by_options"] = temps["temperature_by_options"]
         out_cfg["training"] = dict(out_cfg.get("training") or {}, spot_triage=run_meta)
-        save_checkpoint(model, tok, out_cfg, str(path))
+        save_laya(model, tok, out_cfg, str(path))
         qs = {}
         for r in train_rows:
             qs.update(r["questions"])
         (path / "questions.json").write_text(json.dumps({q: QUESTIONS[q] for q in qs}, indent=2), encoding="utf-8")
 
-    def evaluate(epoch: int, loss):
+    def evaluate(epoch: int, loss, partial: bool = False):
         t0 = time.time()
         temps = {"temperature": cfg.get("temperature"), "temperature_by_options": cfg.get("temperature_by_options")}
         if epoch > 0:   # refit temperatures for the current weights on the held-out calibration missions
-            records = calibration_records(model, tok, calib_items, dev, max_len, head_max_len, parallel=parallel)
+            # same (qtype, logits, target, k) records as laya's calibration_records, but through the benchmark
+            # harness: fp16 + the benchmark batch size, ~3x faster on GPU and identical to how inference runs
+            lgs = runner.logits(calib_items, args.batch_size)
+            records = [(it["qtype"], lg, it["target"], it["k"]) for it, lg in zip(calib_items, lgs)]
             msg = prior_collapse_message(records)
             if msg:
                 print("WARNING (epoch %d): %s" % (epoch, msg), flush=True)
@@ -199,20 +261,22 @@ def main():
             runner.set_temperatures(temps["temperature"], temps["temperature_by_options"])
         rep = run_benchmark(runner, bench_rows, train_rows, out / ("epoch_%02d" % epoch), "%s @ epoch %d" % (args.base, epoch),
                             batch_size=args.batch_size, with_classic=(epoch == 0), quiet=True)
-        if config.freeze_encoder:
-            model.encoder.eval()   # train_model keeps a frozen encoder in eval mode; runner.logits restored .train()
         s = summarize(rep)
-        history.append({"epoch": epoch, "loss": loss, "summary": s, "temperatures": temps,
-                        "eval_seconds": round(time.time() - t0, 1)})
+        history.append({"epoch": epoch, "loss": loss, "partial": partial, "summary": s, "temperatures": temps,
+                        "eval_seconds": round(time.time() - t0, 1), "elapsed_min": round((time.time() - t_start) / 60, 1)})
         score = select(s, args.select_metric)
-        line = "epoch %02d | loss %s | real %.3f | synthetic %.3f | counterfactual %.3f | overall %.3f | eval %.0fs" % (
+        line = "epoch %02d | loss %s | real %.3f | synthetic %.3f | counterfactual %.3f | overall %.3f | eval %.0fs | %.1f min" % (
             epoch, "%.4f" % loss if loss is not None else "  –   ",
             s.get("real", {}).get("mean_macro_f1", float("nan")), s.get("synthetic", {}).get("mean_macro_f1", float("nan")),
-            s.get("counterfactual", {}).get("mean_macro_f1", float("nan")), s["overall"]["mean_macro_f1"], time.time() - t0)
-        if epoch > 0 and score > best["score"]:
-            best.update(score=score, epoch=epoch)
+            s.get("counterfactual", {}).get("mean_macro_f1", float("nan")), s["overall"]["mean_macro_f1"],
+            time.time() - t0, (time.time() - t_start) / 60)
+        improved = epoch > 0 and score > best["score"]
+        if improved:
+            best.update(score=score, epoch=epoch, stale=0)
             save(out / "best", temps)
             line += "  <- best, saved"
+        elif epoch > 0:
+            best["stale"] += 1
         print(line, flush=True)
         (out / "history.json").write_text(json.dumps(history, indent=2), encoding="utf-8")
         write_training_report(out / "training_report.md", history, best["epoch"], args, budget)
@@ -222,14 +286,25 @@ def main():
     evaluate(0, None)
     last = {}
 
-    def on_epoch_end(epoch_idx: int, mean_loss: float):
-        last["temps"] = evaluate(epoch_idx + 1, mean_loss)
+    def on_epoch_end(epoch_idx: int, mean_loss: float, partial: bool):
+        last["temps"] = evaluate(epoch_idx + 1, mean_loss, partial)
+        if args.patience and best["stale"] >= args.patience:
+            print("early stop: no %s improvement for %d eval(s)" % (args.select_metric, best["stale"]), flush=True)
+            return False
+        return True
 
+    deadline, eval_s = None, 0.0
+    if args.max_minutes:
+        # later evals also refit temperatures on the calibration items (~3.4 items per benchmark row)
+        calib_ratio = len(calib_items) / max(1.0, 3.4 * len(bench_rows))
+        eval_s = history[0]["eval_seconds"] * (1 + calib_ratio) * 1.1 + 15
+        deadline = t_start + args.max_minutes * 60 - 45          # leave time to save final/
     t0 = time.time()
-    train_model(model, tok, train_items, config, dev, max_len, head_max_len, on_epoch_end=on_epoch_end, parallel=parallel)
-    save(out / "final", last["temps"])
-    print("training done in %.1f min; best epoch %s (%s = %.3f)" % ((time.time() - t0) / 60, best["epoch"],
-                                                                    args.select_metric, best["score"]), flush=True)
+    train_loop(model, tok, train_items, loop_cfg, dev, max_len, head_max_len, parallel,
+               on_epoch_end=on_epoch_end, deadline=deadline, eval_seconds=eval_s)
+    save(out / "final", last.get("temps") or {"temperature": cfg.get("temperature")})
+    print("training done in %.1f min (run total %.1f min); best epoch %s (%s = %.3f)" % (
+        (time.time() - t0) / 60, (time.time() - t_start) / 60, best["epoch"], args.select_metric, best["score"]), flush=True)
     print((out / "training_report.md").read_text(encoding="utf-8"))
 
     if args.push_to_hub and best["epoch"] is not None:

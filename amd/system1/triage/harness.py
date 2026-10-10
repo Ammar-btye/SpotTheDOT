@@ -9,6 +9,7 @@ the way `laya.Agent` applies them (per (question type, option count) bucket, els
 Pinned to laya==0.4.1: `_forward` is a private helper.
 """
 import math
+import os
 import time
 from collections import Counter
 from typing import Dict, List, Optional, Sequence
@@ -21,19 +22,23 @@ from laya.train import (_forward, encode_item, encode_state, load_checkpoint, ma
 
 
 class LayaRunner:
-    def __init__(self, model, tok, cfg: dict, device: torch.device, name: str = "laya"):
+    def __init__(self, model, tok, cfg: dict, device: torch.device, name: str = "laya",
+                 amp: Optional[bool] = None):
         self.model, self.tok, self.cfg, self.device, self.name = model, tok, cfg, device, name
         self.max_len = cfg.get("max_len", 512)
         self.head_max_len = cfg.get("head_max_len", 192)
         self.parallel = uses_parallel_layout(cfg)
-        self.amp = device.type == "cuda"
+        # fp16 autocast on GPU by default; amp=False (--no-amp) or SPOT_AMP=0 forces fp32,
+        # for GPUs whose fp16 GEMM path fails (e.g. "invalid argument" in F.linear on new ROCm targets).
+        self.amp = (device.type == "cuda" and os.environ.get("SPOT_AMP", "1") != "0") if amp is None else amp
 
     @classmethod
-    def load(cls, model_id_or_path: str = "convaiinnovations/laya", device: str = "auto") -> "LayaRunner":
+    def load(cls, model_id_or_path: str = "convaiinnovations/laya", device: str = "auto",
+             amp: Optional[bool] = None) -> "LayaRunner":
         model, tok, cfg = load_checkpoint(model_id_or_path)
         dev = resolve_device(device)
         model.to(dev).eval()
-        return cls(model, tok, cfg, dev, name=model_id_or_path)
+        return cls(model, tok, cfg, dev, name=model_id_or_path, amp=amp)
 
     def set_temperatures(self, temperature: Optional[Sequence[float]], by_options: Optional[Dict[str, float]]):
         self.cfg = dict(self.cfg, temperature=list(temperature) if temperature is not None else None,

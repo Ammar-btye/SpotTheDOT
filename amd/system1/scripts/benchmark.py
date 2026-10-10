@@ -154,13 +154,14 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="stratified sample of N rows (smoke test)")
     ap.add_argument("--parity", type=int, default=25, help="rows to cross-check against laya.load().predict")
     ap.add_argument("--no-classic", action="store_true")
+    ap.add_argument("--no-amp", action="store_true", help="run Laya in fp32 (no fp16 autocast)")
     ap.add_argument("--uncalibrated", action="store_true", help="ignore the checkpoint's temperatures")
     args = ap.parse_args()
 
     bench, train = read_jsonl(args.data), read_jsonl(args.train)
     if args.limit:
         bench = stratified_limit(bench, args.limit)
-    runner = LayaRunner.load(args.model, args.device)
+    runner = LayaRunner.load(args.model, args.device, amp=False if args.no_amp else None)
     if args.uncalibrated:
         runner.set_temperatures(None, None)
     print("model %s on %s | %d benchmark rows" % (args.model, runner.device, len(bench)), flush=True)
