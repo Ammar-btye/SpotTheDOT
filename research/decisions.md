@@ -12,6 +12,11 @@ Single source of truth. Each entry is the decision plus why, in one or two lines
 - **Databricks dropped (2026-10-10).** We stick to AMD servers: Laya, fine-tuned on AMD, produces the failure-risk scores, and the analytics become SQL views in Neon. That's one fewer platform, and all model work stays on AMD.
 - **System 2 output mirrors Orbit's AI-inspection format** (question / answer / reasoning, plus a recommended action). NextEra operators already use Orbit (kit screenshots).
 
+- **System 2 plan (2026-10-10):** prompt + grammar-JSON + deterministic post-check first; LoRA is a gated stretch, shipped only if it beats the prompt baseline. Fine-tuning teaches format, not facts (research R5).
+- **System 2 model (2026-10-10):** chosen by an on-box bake-off of Qwen3.5-9B / 27B / 35B-A3B, on grounded quality within ≤15 s p95. That gives measured numbers for the AMD/HF pitch.
+- **System 2 owns the flag contract (2026-10-10):** typed Pydantic contract, with flags faked from `policy.py` until Laya output is wired in, so System 2 isn't blocked on System 1.
+- **System 2 eval (2026-10-10):** headline numbers on real mission-held-out flags only, with bootstrap CIs and a human-checked judge; the templated explanation is both the fallback and the baseline. Only ~40 real anomalies, so synthetic data can't inflate the numbers.
+
 ## Pending
 - Exact ROCm serving stack on gfx1151 (research agent running).
 - Roles.
