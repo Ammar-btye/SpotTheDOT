@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import { Fira_Code, Fira_Sans } from "next/font/google";
 import { AppShell } from "@/components/shell/AppShell";
 import { themeInitScript } from "@/lib/theme";
-import { provenance } from "@/lib/analysis";
 import "./globals.css";
 
 const firaSans = Fira_Sans({
@@ -46,7 +45,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         >
           Skip to content
         </a>
-        <AppShell provenance={provenance}>{children}</AppShell>
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   );

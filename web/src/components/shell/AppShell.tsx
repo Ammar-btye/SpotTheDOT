@@ -25,15 +25,7 @@ function crumbsFor(pathname: string): string[] {
   ];
 }
 
-export function AppShell({
-  children,
-  provenance,
-}: {
-  children: React.ReactNode;
-  /* Threaded straight through to the rail's footer. The shell doesn't read
-     it, but it is the only component between the server and the Sidebar. */
-  provenance: { source: string; coverage: string };
-}) {
+export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
 
   /* Two states, because the rail means two different things at two sizes and
@@ -70,7 +62,7 @@ export function AppShell({
           drawer ? "flex" : "hidden"
         } ${docked ? "lg:flex" : "lg:hidden"}`}
       >
-        <Sidebar onClose={closeRail} provenance={provenance} />
+        <Sidebar onClose={closeRail} />
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
