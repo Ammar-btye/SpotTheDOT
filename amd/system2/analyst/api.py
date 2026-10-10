@@ -1,17 +1,4 @@
-"""Stub System 2 API for the Saturday-morning hand-off: web builds against the real contract before any model runs.
-
-`POST /v1/assess` takes an `AssessRequest` (just the System 1 flag, decision A1) behind `X-API-Key` and answers with a
-schema-valid `AssessResponse` copied from a fixture in fixtures/*.json, stamped with the caller's flag and
-`meta.model = "stub"` so stub output can never pass for model output (T-01-07). Phase 3 replaces the fixture lookup
-with the real packet -> LLM -> post-check pipeline behind the same `create_app` and route.
-
-Fixture lookup: the fixture whose flag_id matches AND whose category matches the request; otherwise the category's
-default fixture (one non-insufficient fixture per category); otherwise 501.
-
-Auth: the X-API-Key check is HTTP middleware, so it runs before routing and before the body is read. A keyless or
-wrong-key request gets 401 even when its body is not valid JSON (a route dependency would run after FastAPI parses the
-body, leaking a 422). Every path except OPEN_PATHS needs the key.
-"""
+"""Backend packet assessment API; legacy fixture loaders remain available offline."""
 import hmac
 import json
 import os
@@ -22,7 +9,9 @@ from typing import Dict, List, Optional, Tuple
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from .contract import CONTRACT_VERSION, AssessRequest, AssessResponse
+from .contract import AssessRequest, AssessResponse
+from .backend_contract import BACKEND_CONTRACT_VERSION, BackendAssessRequest, BackendAssessResponse
+from .packet import normalize_packet, assess_prepared_packet
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "fixtures"
@@ -89,26 +78,10 @@ def create_app(api_key: Optional[str] = None, fixtures_dir: Path = FIXTURES) -> 
     check_key(key)
     expected = key.encode("ascii")
 
-    fixtures = load_fixtures(fixtures_dir)
-    by_flag: Dict[str, Tuple[AssessRequest, AssessResponse]] = {}
-    by_category: Dict[str, Tuple[str, AssessResponse]] = {}
-    for name, req, resp in fixtures:
-        fid = req.flag.flag_id
-        if fid in by_flag:
-            raise ValueError("duplicate fixture flag_id %r (fixture %r)" % (fid, name))
-        by_flag[fid] = (req, resp)
-        if resp.explanation.insufficient_context:
-            continue
-        cat = req.flag.category
-        if cat in by_category:
-            raise ValueError("fixtures %r and %r both default category %r" % (by_category[cat][0], name, cat))
-        by_category[cat] = (name, resp)
-
     # No /docs, /redoc or /openapi.json: the committed schema/*.json files are the published contract, and the
     # interactive docs would otherwise hand the contract and a request form to anyone who can reach the port.
-    app = FastAPI(title="SPOTlight System 2 Analyst (stub)", version=CONTRACT_VERSION,
+    app = FastAPI(title="SPOTlight System 2 Analyst (stub)", version=BACKEND_CONTRACT_VERSION,
                   docs_url=None, redoc_url=None, openapi_url=None)
-    app.state.fixtures = fixtures
 
     @app.middleware("http")
     async def key_first(request: Request, call_next):
@@ -120,24 +93,16 @@ def create_app(api_key: Optional[str] = None, fixtures_dir: Path = FIXTURES) -> 
 
     @app.get("/health")
     def health() -> dict:
-        return {"status": "ok", "mode": "stub", "contract_version": CONTRACT_VERSION, "fixtures": len(fixtures)}
+        return {"status": "ok", "mode": "stub", "contract_version": BACKEND_CONTRACT_VERSION}
 
-    @app.post("/v1/assess", response_model=AssessResponse)
-    def assess(body: AssessRequest) -> AssessResponse:
+    @app.post("/v1/assess", response_model=BackendAssessResponse)
+    def assess(body: BackendAssessRequest) -> BackendAssessResponse:
         t0 = time.perf_counter()
-        flag = body.flag
-        hit = by_flag.get(flag.flag_id)
-        if hit is not None and hit[0].flag.category == flag.category:
-            resp = hit[1]
-        elif flag.category in by_category:
-            resp = by_category[flag.category][1]
-        else:
-            raise HTTPException(status_code=501, detail="no stub fixture for category %r" % flag.category)
-        d = resp.model_dump(mode="json")          # fresh copy: the loaded fixture is never mutated
-        d["flag_id"] = flag.flag_id
-        d["packet"]["flag"] = flag.model_dump(mode="json")
-        d["meta"]["model"] = "stub"
-        d["meta"]["latency_ms"] = int((time.perf_counter() - t0) * 1000)
-        return AssessResponse.model_validate(d)
+        try:
+            prepared = normalize_packet(body)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        result = assess_prepared_packet(prepared)
+        return result.model_copy(update={"latency_ms": int((time.perf_counter() - t0) * 1000)})
 
     return app

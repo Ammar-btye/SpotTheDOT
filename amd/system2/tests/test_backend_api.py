@@ -1,5 +1,6 @@
 """Backend transport tracer: authenticate first and assess only supplied evidence."""
 import sys
+import ast
 from pathlib import Path
 
 import pytest
@@ -34,8 +35,13 @@ def test_backend_equipment_request():
     assert out["recommended_action"] == "DISPATCH_TECHNICIAN"
     assert out["model"] == "stub"
     assert "packet" not in out
-    from backend.app.services.system2 import normalize_assessment
-    stored = normalize_assessment(out)
+    # Execute the actual pure backend normalizer without importing its DB client dependencies.
+    source = Path(__file__).resolve().parents[3] / "backend/app/services/system2.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "normalize_assessment")
+    namespace = {}
+    exec("from __future__ import annotations\n" + ast.unparse(function), namespace)
+    stored = namespace["normalize_assessment"](out)
     assert stored["answer"] == out["answer"]
     assert "F1" in stored["reasoning"]
 
