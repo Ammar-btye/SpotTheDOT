@@ -8,7 +8,10 @@ evidence can never rescue a claim. Checked tokens:
     decimal place (inclusive) for rounding only; sign, unit and percent context are retained;
   - ISO dates/datetimes and clock times;
   - asset/waypoint names and IDs from the kit catalog (casefolded whole-token text match);
-  - identifier-shaped tokens (letters with digits, e.g. A0003, HX-201) — never treated as measurements.
+  - identifier-shaped tokens (letters with digits, e.g. A0003, HX-201) — never treated as measurements;
+  - spelled-out numbers (NUMBER_WORDS: zero-nineteen, tens, hundred/thousand/million, dozen, ordinals third
+    onward) — no value is parsed; the word must appear verbatim in the cited content ('first', 'second' and
+    'no' are not checked: their usual sense here is order, time unit or negation, not a count).
 NaN/infinity are always rejected; any other digit-bearing form we cannot parse fails closed unless it
 appears verbatim in the cited content.
 
@@ -125,7 +128,7 @@ HINTS = {
     'nonfinite_number': 'NaN/infinity are not allowed',
     'ungrounded_number': 'number not in the evidence this claim cites',
     'unit_mismatch': 'unit/percent differs from the cited evidence',
-    'unsupported_number': 'unparseable number; copy it exactly or drop it',
+    'unsupported_number': 'unparseable or spelled-out number; copy it exactly or drop it',
     'ungrounded_time': 'date/time not in the cited evidence',
     'ungrounded_entity': 'asset/waypoint not named in the cited evidence',
     'ungrounded_identifier': 'identifier not in the cited evidence',
@@ -153,6 +156,15 @@ _WORDS = (r'percent|per\s?cent|pct|psi|kpa|bar|dba|db|decibels?|degrees?\s?(?:ce
           r'|celsius|fahrenheit|seconds?|secs?|minutes?|mins?|hours?|hrs?|rpm|hz|volts?|amps?|kw|mm/s|mm')
 UNIT_RE = re.compile(r'[  -]?(?:%%|°\s?[CF](?!\w)|(?i:%s)(?!\w)|[CFVAWsmh](?!\w))' % _WORDS)
 ORDINAL_RE = re.compile(r'(?:st|nd|rd|th)(?!\w)')
+_UNITS_W = ('zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen '
+            'seventeen eighteen nineteen twenty thirty forty fifty sixty seventy eighty ninety '
+            'hundred thousand million dozen')
+_ORDINALS_W = ('third fourth fifth sixth seventh eighth ninth tenth eleventh twelfth thirteenth fourteenth fifteenth '
+               'sixteenth seventeenth eighteenth nineteenth twentieth')
+NUMBER_WORDS = frozenset(_UNITS_W.split()) | frozenset(_ORDINALS_W.split()) | frozenset(
+    w + 's' for w in ('hundred', 'thousand', 'million', 'dozen'))
+NUMBER_WORD_RE = re.compile(r'(?<!\w)(?:%s)(?!\w)' % '|'.join(sorted(NUMBER_WORDS, key=lambda w: (-len(w), w))),
+                            re.IGNORECASE)
 KEY_RE = re.compile(r'(\w+)(?:\s*=\s*|"\s*:\s*)$')
 DECLARED_RE = re.compile(r'(?<!\w)unit(?:\s*=\s*|"\s*:\s*")([^;|,"\n]+)')
 UNITS = {'%': '%', 'percent': '%', 'pct': '%', 'c': 'C', 'celsius': 'C', 'f': 'F', 'fahrenheit': 'F',
@@ -210,7 +222,7 @@ def _chunk(text: str, i: int) -> Tuple[int, int]:
 
 def _scan(text: str, catalog: Optional[EntityCatalog] = None) -> dict:
     """Positioned tokens: dates/times, nonfinite, entities (claims only), identifiers, numbers, unsupported."""
-    tok = {'dt': [], 'nonfinite': [], 'entity': [], 'ident': [], 'number': [], 'unsupported': []}
+    tok = {'dt': [], 'nonfinite': [], 'entity': [], 'ident': [], 'number': [], 'unsupported': [], 'word': []}
     work = text
     spans = []
     for m in DATETIME_RE.finditer(work):
@@ -270,6 +282,8 @@ def _scan(text: str, catalog: Optional[EntityCatalog] = None) -> dict:
         a, b = _chunk(text, m.start())
         last = max(b, m.start() + 1)
         tok['unsupported'].append((a, b, text[a:b]))
+    for m in NUMBER_WORD_RE.finditer(work):   # after entity/identifier masking: names keep their own check
+        tok['word'].append((m.start(), m.end(), m.group()))
     return tok
 
 
@@ -333,7 +347,7 @@ def _content_errors(text, support_ids, cited_ids, prepared, catalog, field, clai
             found.append((a, 'ungrounded_number', raw))
         elif unit is not None and not any(unit in units for units in near):
             found.append((a, 'unit_mismatch', raw))
-    for a, _, raw in tok['unsupported']:
+    for a, _, raw in tok['unsupported'] + tok['word']:
         if not present(raw):
             found.append((a, 'unsupported_number', raw))
     found.sort(key=lambda f: (f[0], f[1]))

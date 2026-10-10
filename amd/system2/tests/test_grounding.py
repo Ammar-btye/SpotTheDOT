@@ -275,6 +275,19 @@ def test_unsupported_number_forms_fail_closed_unless_verbatim():
     assert check(cand(p, [('Version v2.1.3.', ['F1'])]), p) == ()
 
 
+@pytest.mark.parametrize('claim, bad', [
+    ('Seven HIGH anomalies were recorded and battery was at ninety percent.', ['Seven', 'ninety']),
+    ('Two failures and a dozen readings.', ['Two', 'dozen']),
+    ('This was the third timeout of twenty-two attempts.', ['third', 'twenty', 'two']),
+    ('One HIGH anomaly was recorded.', []),            # 'one' is verbatim in the cited row
+    ('The first action had no anomaly; battery_pct=22.', []),   # order / negation words are not counts
+])
+def test_spelled_out_numbers_fail_closed_unless_verbatim(claim, bad):
+    p = packet([{'id': 'F1', 'fact': 'battery_pct=22; status=FAILED; one HIGH anomaly'}])
+    errors = check(cand(p, [(claim, ['F1'])]), p)
+    assert [(e.code, e.value) for e in errors] == [('unsupported_number', w) for w in bad]
+
+
 @pytest.mark.parametrize('claim, code', [
     ('Seen at 2026-09-01T18:27:54.', None),
     ('Seen at 18:27.', None),
