@@ -1,5 +1,7 @@
 # Recorded AMD evaluation runs
 
+> Phase 4 held-out (headline) report: see [../report/README.md](../report/README.md). The runs below are development-only.
+
 ## 2026-10-10: Qwen3.5-9B Q4_K_M on gfx1151 (Phase 2 UAT)
 
 **Provenance.** Copied by hand from the AMD box terminal output (Radeon Cloud Jupyter VM `jupyter-amducf07`) and
