@@ -146,7 +146,7 @@ Each layer gives up before its caller does, so the caller always gets an answer 
 | backend -> orchestrator call | min(42 s, time left - 3 s) | `ORCHESTRATOR_TIMEOUT_S` (42) | the backend's own MCP -> System 2 -> template path with the time left |
 | orchestrator `/v1/assess` | 40 s total, `min(3 s, 10 %)` reserve | `ORCH_DEADLINE_S` (40) | template; `trace` shows the skipped/timed-out node |
 | orchestrator nodes | context 15 s (<= 40 %), System 1 6 s, vision 12 s, System 2 20 s, or 28 s when an image is sent (`ORCH_SYSTEM2_IMAGE_BUDGET_S`; vision is capped so that budget stays free, at least 3 s); each capped by what is left | `ORCH_*_BUDGET_S` | node `skipped`/`timeout`, the graph continues |
-| System 2 generation | 15 s over at most two attempts; **25 s for requests with an image** (`SYSTEM2_IMAGE_DEADLINE_S`): the image call keeps 8 s back and on a timeout the same attempt is re-sent text-only | 15 fixed / `SYSTEM2_IMAGE_DEADLINE_S` (25) | checked template, `path: fallback` |
+| System 2 generation | 15 s over at most two attempts; **25 s for requests with an image** (`SYSTEM2_IMAGE_DEADLINE_S`): the image call keeps 8 s back and on a timeout the same attempt is re-sent text-only | `SYSTEM2_DEADLINE_S` (15) / `SYSTEM2_IMAGE_DEADLINE_S` (25) | checked template, `path: fallback` |
 | gateway upstream | `system2` 15 s, `system2-vision` 30 s, `system1` 10 s, `embed` 10 s | `GATEWAY_*_TIMEOUT_S` | error to the caller (no retries, no fallback model) |
 
 System 2 closes its own socket at 15 s (25 s with an image), so the gateway's 30 s vision timeout only matters for
@@ -212,6 +212,7 @@ pipeline: at most two llama-server attempts inside a 15 s deadline, then the che
 | `SYSTEM2_MODEL` | served model name, sent to llama-server and part of the cache key; required when the URL is set | unset |
 | `SYSTEM2_CACHE_DIR` | explanation cache directory | `amd/system2/cache` in a checkout; none in the image unless set to a writable mount |
 | `SYSTEM2_VISION_MODEL` | model for requests that carry `image_b64` (gateway alias `system2-vision`) | compose: `system2-vision`; native: `SYSTEM2_MODEL` |
+| `SYSTEM2_DEADLINE_S` | generation deadline for text requests (the 15 s p95 target); raise only for a slow local model; must be in (0, 120] | `15` |
 | `SYSTEM2_IMAGE_DEADLINE_S` | generation deadline for requests with `image_b64` (text keeps 15 s); must be in (0, 120] | `25` |
 | `SYSTEM2_LLAMA_API_KEY` | sent as `Authorization: Bearer` (the gateway's `LITELLM_MASTER_KEY`); a llama-server without `--api-key` ignores it | compose: `LITELLM_MASTER_KEY`; native: unset |
 

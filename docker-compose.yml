@@ -208,6 +208,7 @@ services:
       SYSTEM2_VISION_MODEL: ${SYSTEM2_VISION_MODEL:-system2-vision}   # only for requests with image_b64
       # Bearer for the gateway; a llama-server without --api-key ignores it.
       SYSTEM2_LLAMA_API_KEY: ${SYSTEM2_LLAMA_API_KEY:-${LITELLM_MASTER_KEY:-sk-spot-gateway-dev-key-change-me}}
+      SYSTEM2_DEADLINE_S: ${SYSTEM2_DEADLINE_S:-15}   # text requests (p95 target); raise only for slow local models; (0, 120]
       SYSTEM2_IMAGE_DEADLINE_S: ${SYSTEM2_IMAGE_DEADLINE_S:-25}   # requests with image_b64 only (text: 15 s); (0, 120]
       SYSTEM2_CACHE_DIR: ${SYSTEM2_CACHE_DIR:-}
     depends_on:

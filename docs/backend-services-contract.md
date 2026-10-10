@@ -197,7 +197,8 @@ is unchanged.
   Consumed context fields: `question` string, `allowed_actions` code-to-description object or code list,
   `suggested_action` allowed code, `citation_ids` string list, `missing`/`gaps` string lists,
   `insufficient_context` boolean; evidence sections `facts`, `similar_incidents`, `asset_history`, `manual`,
-  `policy`, `system1` object lists and recursive `event`/`mission` objects. IDs retain their supplied spelling.
+  `policy`, `system1`, `graph` (knowledge-graph facts, `docs/system2-rag-contract.md` §7) object lists and
+  recursive `event`/`mission` objects. IDs retain their supplied spelling.
   Evidence content comes from fact/text/content or substantive structured values, never IDs, titles or control metadata.
   Malformed consumed values, unknown actions and conflicting duplicate IDs return 422. Valid absent/unusable
   evidence, orphan citations, missing actions, nonempty missing/gaps or explicit insufficiency return 200 with
