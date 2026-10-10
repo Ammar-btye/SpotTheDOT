@@ -102,8 +102,10 @@ def _matches_safety_keywords(instance, schema):
     This is deliberately a focused keyword evaluator, not a general JSON Schema validator.
     Unknown keywords fail so tests cannot accidentally ignore a new safety constraint.
     """
-    assert set(schema) <= {"properties", "required", "const", "minItems", "maxItems"}
+    assert set(schema) <= {"properties", "required", "const", "enum", "minItems", "maxItems"}
     if "const" in schema and (type(instance) is not type(schema["const"]) or instance != schema["const"]):
+        return False
+    if "enum" in schema and not any(type(instance) is type(v) and instance == v for v in schema["enum"]):
         return False
     if "minItems" in schema and len(instance) < schema["minItems"]:
         return False

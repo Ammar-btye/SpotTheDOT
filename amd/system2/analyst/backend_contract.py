@@ -1,10 +1,18 @@
-"""Authoritative backend HTTP transport; legacy contract.py remains offline-only."""
+"""Authoritative backend HTTP transport; legacy contract.py remains offline-only.
+
+Response metadata stays flat. path: stub | llm | retry | fallback | insufficient_context (docs/backend-services-contract.md).
+insufficient_context needs empty evidence, low confidence and MANUAL_REVIEW; other paths need evidence. stub is
+labelled model 'stub', fallback model 'template', and llm/retry name the serving model (never stub/template).
+"""
 from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-BACKEND_CONTRACT_VERSION = "2026-10-10.backend.1"
+BACKEND_CONTRACT_VERSION = "2026-10-10.backend.1"  # additive response widening kept this marker (contract doc)
+COMPLETE_PATHS = ("stub", "llm", "retry", "fallback")
+MODEL_PATHS = ("llm", "retry")
+RESERVED_MODELS = ("stub", "template")
 
 
 class BackendAction(str, Enum):
@@ -55,7 +63,15 @@ class BackendAssessResponse(BaseModel):
                 "evidence": {"maxItems": 0}, "confidence": {"const": "low"},
                 "recommended_action": {"const": "MANUAL_REVIEW"},
                 "path": {"const": "insufficient_context"}}},
-            "else": {"properties": {"evidence": {"minItems": 1}, "path": {"const": "stub"}}},
+            "else": {"properties": {"evidence": {"minItems": 1}, "path": {"enum": list(COMPLETE_PATHS)}}},
+            "allOf": [
+                {"if": {"properties": {"path": {"const": "stub"}}, "required": ["path"]},
+                 "then": {"properties": {"model": {"const": "stub"}}}},
+                {"if": {"properties": {"path": {"const": "fallback"}}, "required": ["path"]},
+                 "then": {"properties": {"model": {"const": "template"}}}},
+                {"if": {"properties": {"path": {"enum": list(MODEL_PATHS)}}, "required": ["path"]},
+                 "then": {"properties": {"model": {"not": {"enum": list(RESERVED_MODELS)}}}}},
+            ],
         },
     )
     evidence: list[BackendEvidence]
@@ -65,10 +81,10 @@ class BackendAssessResponse(BaseModel):
     confidence: Literal["high", "medium", "low"]
     insufficient_context: bool
     flag_id: int = Field(gt=0)
-    model: Literal["stub"] = "stub"
+    model: str = Field(default="stub", min_length=1, pattern=r"\S")
     latency_ms: int = Field(ge=0, default=0)
     tokens_per_sec: float | None = Field(ge=0, default=None)
-    path: Literal["stub", "insufficient_context"]
+    path: Literal["stub", "llm", "retry", "fallback", "insufficient_context"]
 
     @model_validator(mode="after")
     def safe_insufficient(self):
@@ -76,6 +92,12 @@ class BackendAssessResponse(BaseModel):
             if (self.evidence or self.confidence != "low" or self.recommended_action != BackendAction.MANUAL_REVIEW
                     or self.path != "insufficient_context"):
                 raise ValueError("insufficient context requires empty evidence and safe manual review")
-        elif self.path != "stub" or not self.evidence:
-            raise ValueError("complete assessment requires evidence and stub path")
+        elif self.path not in COMPLETE_PATHS or not self.evidence:
+            raise ValueError("complete assessment requires evidence and a stub, llm, retry or fallback path")
+        if self.path == "stub" and self.model != "stub":
+            raise ValueError("stub path must be labelled model stub")
+        if self.path == "fallback" and self.model != "template":
+            raise ValueError("fallback path must be labelled model template")
+        if self.path in MODEL_PATHS and self.model in RESERVED_MODELS:
+            raise ValueError("llm/retry path must name the serving model")
         return self

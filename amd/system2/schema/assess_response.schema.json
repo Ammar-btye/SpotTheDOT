@@ -52,13 +52,85 @@
     }
   },
   "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "path": {
+            "const": "stub"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "then": {
+        "properties": {
+          "model": {
+            "const": "stub"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "path": {
+            "const": "fallback"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "then": {
+        "properties": {
+          "model": {
+            "const": "template"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "path": {
+            "enum": [
+              "llm",
+              "retry"
+            ]
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "then": {
+        "properties": {
+          "model": {
+            "not": {
+              "enum": [
+                "stub",
+                "template"
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
   "else": {
     "properties": {
       "evidence": {
         "minItems": 1
       },
       "path": {
-        "const": "stub"
+        "enum": [
+          "stub",
+          "llm",
+          "retry",
+          "fallback"
+        ]
       }
     }
   },
@@ -111,8 +183,9 @@
       "type": "integer"
     },
     "model": {
-      "const": "stub",
       "default": "stub",
+      "minLength": 1,
+      "pattern": "\\S",
       "title": "Model",
       "type": "string"
     },
@@ -138,6 +211,9 @@
     "path": {
       "enum": [
         "stub",
+        "llm",
+        "retry",
+        "fallback",
         "insufficient_context"
       ],
       "title": "Path",
