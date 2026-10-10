@@ -1,4 +1,9 @@
-"""Backend packet assessment API; legacy fixture loaders remain available offline."""
+"""Backend packet assessment API; legacy fixture loaders remain available offline.
+
+Stub by default. create_app(assessor=...) switches /v1/assess to live mode: any object with .assess(body) ->
+(BackendAssessResponse, cache_status) and .model (analyst.live.LiveAssessor) is called after the X-API-Key middleware
+and normalize_packet, and the cache status goes out as X-System2-Cache. This module never imports the generator.
+"""
 import hmac
 import json
 import os
@@ -6,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
 from .contract import AssessRequest, AssessResponse
@@ -18,6 +23,7 @@ FIXTURES = ROOT / "fixtures"
 MIN_KEY_LEN = 16
 KEY_HEADER = "X-API-Key"
 OPEN_PATHS = frozenset({"/health"})
+CACHE_HEADER = "X-System2-Cache"
 FIXTURE_KEYS = {"name", "description", "request", "response"}
 
 Fixture = Tuple[str, AssessRequest, AssessResponse]
@@ -85,7 +91,7 @@ def resolve_api_key(api_key: Optional[str] = None) -> str:
     return api_key
 
 
-def create_app(api_key: Optional[str] = None, fixtures_dir: Path = FIXTURES) -> FastAPI:
+def create_app(api_key: Optional[str] = None, fixtures_dir: Path = FIXTURES, assessor=None) -> FastAPI:
     key = resolve_api_key(api_key)
     expected = key.encode("ascii")
 
@@ -104,15 +110,24 @@ def create_app(api_key: Optional[str] = None, fixtures_dir: Path = FIXTURES) -> 
 
     @app.get("/health")
     def health() -> dict:
-        return {"status": "ok", "mode": "stub", "contract_version": BACKEND_CONTRACT_VERSION}
+        if assessor is None:
+            return {"status": "ok", "mode": "stub", "contract_version": BACKEND_CONTRACT_VERSION}
+        return {"status": "ok", "mode": "live", "contract_version": BACKEND_CONTRACT_VERSION, "model": assessor.model}
 
     @app.post("/v1/assess", response_model=BackendAssessResponse)
-    def assess(body: BackendAssessRequest) -> BackendAssessResponse:
+    def assess(body: BackendAssessRequest, response: Response) -> BackendAssessResponse:
         t0 = time.perf_counter()
         try:
             prepared = normalize_packet(body)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if assessor is not None:
+            try:
+                result, status = assessor.assess(body)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            response.headers[CACHE_HEADER] = status
+            return result
         result = assess_prepared_packet(prepared)
         return result.model_copy(update={"latency_ms": int((time.perf_counter() - t0) * 1000)})
 

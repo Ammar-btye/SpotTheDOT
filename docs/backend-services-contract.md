@@ -170,15 +170,29 @@ the next `/explain` retries System 2 (and replaces it on success); when unset, t
   insufficient_context true, empty evidence, low confidence and MANUAL_REVIEW; every other path requires
   insufficient_context false and at least one evidence item; `stub` requires model `stub`, `fallback` requires
   model `template`, and `llm`/`retry` name the serving model (never `stub` or `template`). Metadata stays flat:
-  no nested attempt or debug objects. The live `/v1/assess` still returns only `stub` and `insufficient_context`
-  in this phase; `llm`/`retry`/`fallback` come from the offline checked pipeline until Phase 3 wires it in.
+  no nested attempt or debug objects. The live `/v1/assess` returns `stub`/`insufficient_context` when
+  `SYSTEM2_LLAMA_URL` is unset, and `llm`/`retry`/`fallback`/`insufficient_context` from the checked pipeline when
+  it is set (live mode, below).
   Ordinary actions follow MCP ALL_ACTIONS and packet membership; System 2 explicitly extends the vocabulary
   with MANUAL_REVIEW, appended internally without mutating caller context. Each citation resolves to actual
   supplied content. X-API-Key authorization runs before parsing (401 for missing/wrong keys).
   Legacy Phase 1 fixture models remain offline examples and do not define this HTTP contract.
 - System 2 container env (ADDED 2026-10-10): `SYSTEM2_API_KEY` (required, X-API-Key secret), `SYSTEM2_HOST` /
   `SYSTEM2_PORT` (`0.0.0.0` / `8083` in the image), `SPOT_KIT_DIR` (`/app/kit`; compose mounts
-  `amd/system1/data/kit` read-only there for the grounding entity catalog and saved-packet row checks).
+  `amd/system1/data/kit` read-only there for the grounding entity catalog and saved-packet row checks),
+  `SYSTEM2_LLAMA_URL` / `SYSTEM2_MODEL` / `SYSTEM2_CACHE_DIR` (live mode, below; empty = stub, no cache).
+- **System 2 live mode (ADDED 2026-10-10, Phase 3; additive, contract version unchanged):**
+  env `SYSTEM2_LLAMA_URL` (llama-server base URL, e.g. `http://127.0.0.1:8080`; unset or empty means stub),
+  `SYSTEM2_MODEL` (required when the URL is set; sent to llama-server and part of the cache key),
+  `SYSTEM2_CACHE_DIR` (explanation cache; default `amd/system2/cache` in a checkout, none in the image unless set to
+  a writable mount). Live metadata: `model` = the serving model llama-server reports; `latency_ms` = checked-pipeline
+  time for this request; `tokens_per_sec` = llama-server `timings.predicted_per_second` of the accepted attempt,
+  null for `fallback`/`insufficient_context`. The generation budget is a 15 s deadline over at most two attempts
+  (then the checked template, `fallback`). Response header `X-System2-Cache: hit | miss | off` in live mode only
+  (absent in stub mode). On `hit` the body is the stored response unchanged, so its `model`/`latency_ms`/
+  `tokens_per_sec` describe the generation that produced it; callers logging live speed skip hits. The cache key is
+  `(flag_id, packet_hash, model, prompt_ver)` and only `llm`/`retry` results are stored; a stored entry is re-checked
+  against the current packet before it is served. Live `GET /health` adds `"model"` and reports `"mode": "live"`.
 - System 2 request the backend sends: `POST /v1/assess {"flag_id", "request_id", "flag", "event", "reasons":
   [detail strings], "context": <packet from GET /flags/{id}/context>}`; it accepts `reasoning` or R3's
   `evidence[{claim, ids}]`. Optional `POST /v1/debrief {"mission_id", "facts"}` → `{"summary",
