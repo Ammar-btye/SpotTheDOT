@@ -95,6 +95,12 @@ def test_health_open_and_keyless(client):
     assert TEST_KEY not in r.text
 
 
+@pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"])
+def test_docs_routes_disabled(client, path):
+    assert client.get(path).status_code == 401                 # keyless: never served
+    assert client.get(path, headers=_h()).status_code == 404   # keyed: the route does not exist
+
+
 def test_create_app_requires_key(monkeypatch):
     monkeypatch.delenv("AMD_API_KEY", raising=False)
     with pytest.raises(RuntimeError) as e:

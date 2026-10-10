@@ -113,6 +113,9 @@ curl -s -X POST http://127.0.0.1:8000/v1/assess \
 | `GET /health` | open | `{"status": "ok", "mode": "stub", "contract_version": ..., "fixtures": 6}` |
 | `POST /v1/assess` | `X-API-Key` header | an `AssessResponse` |
 
+There are no `/docs`, `/redoc` or `/openapi.json` routes: the committed `schema/*.json` files are the published
+contract. Every path except `/health` needs the key (a keyless request to any other path gets 401).
+
 Status codes for `POST /v1/assess`:
 - **200**: a schema-valid `AssessResponse`.
 - **401**: missing or wrong `X-API-Key`. The key is checked in middleware before the body is read, so a request

@@ -78,7 +78,10 @@ def create_app(api_key: Optional[str] = None, fixtures_dir: Path = FIXTURES) -> 
             raise ValueError("fixtures %r and %r both default category %r" % (by_category[cat][0], name, cat))
         by_category[cat] = (name, resp)
 
-    app = FastAPI(title="SPOTlight System 2 Analyst (stub)", version=CONTRACT_VERSION)
+    # No /docs, /redoc or /openapi.json: the committed schema/*.json files are the published contract, and the
+    # interactive docs would otherwise hand the contract and a request form to anyone who can reach the port.
+    app = FastAPI(title="SPOTlight System 2 Analyst (stub)", version=CONTRACT_VERSION,
+                  docs_url=None, redoc_url=None, openapi_url=None)
     app.state.fixtures = fixtures
 
     @app.middleware("http")
