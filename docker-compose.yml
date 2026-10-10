@@ -15,9 +15,10 @@
 # backend    8000  local, hybrid, neon      FastAPI dashboard API (/api/v1, /docs). ADMIN_TOKEN (header
 #                                           X-Admin-Token) guards /ops, /replay, POST /events; CORS_ORIGINS only
 # web        3000  local, hybrid, neon, frontend  Next.js dashboard; reads backend via /api/dashboard
-# system2    8083  local, hybrid, neon, system2  Authenticated System 2 /v1/assess: packet-grounded stub (model=stub)
-#                                           by default; live checked pipeline when SYSTEM2_LLAMA_URL points at
-#                                           llama-server (e.g. http://host.docker.internal:18080 over an SSH tunnel).
+# system2    8083  local, hybrid, neon, system2  Authenticated System 2 /v1/assess (contract 2026-10-10.backend.2):
+#                                           packet-grounded stub (model=stub) by default; live checked pipeline when
+#                                           SYSTEM2_LLAMA_URL is set (the gateway, http://gateway:4000, or llama-server
+#                                           directly). Optional vision/ocr/image_b64 inputs (V# rows, annotated image).
 #                                           Kit mounted read-only at /app/kit (SPOT_KIT_DIR) for grounding.
 # gateway    4000  local, hybrid, neon, system2  LiteLLM proxy: one OpenAI-compatible endpoint, Bearer LITELLM_MASTER_KEY.
 #                                           Aliases system2 / system2-vision -> llama-server (LLAMA_URL, VISION_LLAMA_URL;

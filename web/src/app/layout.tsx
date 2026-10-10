@@ -45,7 +45,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         >
           Skip to content
         </a>
-        <AppShell provenance={{ source: "Backend database · synthetic challenge data", coverage: "Overview and open flags refresh live" }}>{children}</AppShell>
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   );
