@@ -75,3 +75,20 @@ All rows are identical to Run 1 except latency: model p50 / p95 **5283 / 6580 ms
 - On these 6 cases the model does not beat the template on mechanical checks (both 5/5). Showing an advantage
   needs held-out packets and a quality judge or human labels (Phase 4).
 - Not measured: peak GPU memory, and throughput in tokens per second (it is in the raw `metrics.json` on the box).
+
+## Model decision (2026-10-10, provisional)
+
+**Qwen3.5-9B Q4_K_M is the serving model for now** (`SYSTEM2_MODEL=qwen3.5-9b-q4km`), based on Run 1 / Run 2
+above: 5/5 first-attempt accepted, 0 truncated at 350 tokens, p95 7.9 s (350) / 6.6 s (512), inside the 15 s budget.
+
+Limits: these are 6 training dev cases, not headline numbers; peak GPU memory and tokens/s for this run are not yet
+recorded; on mechanical checks the model ties the template (5/5 each).
+
+**MOD-01 pending.** The 27B and 35B-A3B runs on the same harness and packets wait for the AMD box (the Jupyter
+server returned 502). When it is back, run `scripts/evaluate.py --runner both` with each model's own `--model`,
+`--label` and `--out-dir`, record grounding pass / fallback rate, p95 latency and peak GPU memory (`amd-smi`), and
+switch `SYSTEM2_MODEL` only if another model wins within 15 s p95.
+
+**Live /v1/assess check: PENDING (human, AMD box).** Run llama-server plus `scripts/serve.py` in live mode on the
+box, curl `/v1/assess` twice (expect `X-System2-Cache: miss` then `hit`), and run `scripts/precompute.py` on a fresh
+`SYSTEM2_CACHE_DIR` for live-pipeline p50/p95 (steps in docs/RUNNING.md, "Live mode"). Numbers replace this line.

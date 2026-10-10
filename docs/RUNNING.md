@@ -13,7 +13,7 @@ header table too) and this page. Ports and contracts are in `docs/backend-servic
 | `system1` | 8082 | local, models | `amd/system1/service/` | Laya. `TORCH_VARIANT` build arg. Same `hf-cache` volume. Fine-tuned checkpoints are mounted at `/models/checkpoints`. |
 | `mcp` | 8090 | local, hybrid, neon | `amd/mcp/` | Logs in as `spot_mcp_user` (in `spot_mcp_reader`: read-only, plus INSERT on `app.*`). |
 | `backend` | 8000 | local, hybrid, neon | `backend/` | Logs in as `spot_app_user` (in `spot_app`). API docs at http://localhost:8000/docs. `ADMIN_TOKEN` (header `X-Admin-Token`) guards `/ops/*`, `/replay/*` and `POST /events*`; CORS allows `CORS_ORIGINS` only (default `http://localhost:3000`); `REQUEST_DEADLINE_S` (45) bounds `/flags/{id}/context` and `/explain`. |
-| `system2` | 8083 | local, hybrid, neon, system2 | `amd/system2/` | Non-root authenticated packet-grounded stub (`model: stub`), healthcheck inherited from image. Backend supplies context; no MCP/database access. The image includes `data/` (approved saved packets); the kit is mounted read-only at `/app/kit` (`SPOT_KIT_DIR`). |
+| `system2` | 8083 | local, hybrid, neon, system2 | `amd/system2/` | Non-root authenticated `/v1/assess`: packet-grounded stub (`model: stub`) by default, live checked pipeline against llama-server when `SYSTEM2_LLAMA_URL`/`SYSTEM2_MODEL` are set (explanation cache in `SYSTEM2_CACHE_DIR`), healthcheck inherited from image. Backend supplies context; no MCP/database access. The image includes `data/` (approved saved packets); the kit is mounted read-only at `/app/kit` (`SPOT_KIT_DIR`). |
 
 Published ports bind to `127.0.0.1` by default (`BIND_ADDR`). Inside the network the services use service names
 (`http://system1:8082`).
@@ -124,7 +124,7 @@ docker compose run --rm --no-deps --entrypoint db/job.sh db-init seed --force-re
                                                                                # seeded events/flags (overwrites)
 ```
 
-## System 2 stub on 8083
+## System 2 on 8083 (stub or live)
 
 Set `SYSTEM2_API_KEY` in `.env` to a printable ASCII secret of at least 16 characters, without surrounding whitespace. The same secret is passed to backend and System 2; it is never baked into the image. Native launch accepts `AMD_API_KEY` as a backward-compatible alias; different values in both variables fail before binding.
 
@@ -140,6 +140,56 @@ ssh -L 8083:127.0.0.1:8083 <box>
 
 `/health` is public; `POST /v1/assess` requires `X-API-Key` and accepts the request in `amd/system2/fixtures/backend/equipment.json` under `request`. Missing authentication returns 401. Native defaults are `127.0.0.1:8083`; `SYSTEM2_HOST`/`SYSTEM2_PORT` and `--host`/`--port` override them. Docker binds all container interfaces, while published ports bind `${BIND_ADDR:-127.0.0.1}`.
 
-The offline grounding, dataset and evaluation modules read the sponsor kit from `SPOT_KIT_DIR` (default: the checked-in `amd/system1/data/kit` when run from the repo). The image sets `SPOT_KIT_DIR=/app/kit` and compose mounts `./amd/system1/data/kit` there read-only; a plain `docker run` needs `-v "$PWD/amd/system1/data/kit:/app/kit:ro"` before those modules can load. The live stub does not read the kit.
+The offline grounding, dataset and evaluation modules read the sponsor kit from `SPOT_KIT_DIR` (default: the checked-in `amd/system1/data/kit` when run from the repo). The image sets `SPOT_KIT_DIR=/app/kit` and compose mounts `./amd/system1/data/kit` there read-only; a plain `docker run` needs `-v "$PWD/amd/system1/data/kit:/app/kit:ro"` before those modules can load. The stub does not read the kit; live mode loads the entity catalog from it at startup.
 
 Local, hybrid and neon include the stub. Backend defaults `SYSTEM2_URL` to `http://system2:8083`; an explicit remote URL overrides it (for a host SSH tunnel use `http://host.docker.internal:18083`). Backend retains its template fallback when the service is unavailable or rejects the key. System 2 receives the prepared MCP packet from backend and does not retrieve packets itself. `model: stub` is deterministic packet evidence, not live LLM inference.
+
+### Live mode (checked pipeline against llama-server)
+
+`SYSTEM2_LLAMA_URL` unset or empty means stub (everything above). Setting it switches `/v1/assess` to the checked
+pipeline: at most two llama-server attempts inside a 15 s deadline, then the checked template (`path: fallback`,
+`model: template`); insufficient packets return `insufficient_context` without calling the model.
+
+| Env | Meaning | Default |
+|---|---|---|
+| `SYSTEM2_LLAMA_URL` | llama-server base URL (`http(s)://host:port`); loopback or SSH tunnel only | unset = stub |
+| `SYSTEM2_MODEL` | served model name, sent to llama-server and part of the cache key; required when the URL is set | unset |
+| `SYSTEM2_CACHE_DIR` | explanation cache directory | `amd/system2/cache` in a checkout; none in the image unless set to a writable mount |
+
+An incomplete live config (URL without model, non-http URL, few-shots or kit unavailable) exits 2 before binding.
+Live `/health` reports `"mode": "live"` and `"model"`.
+
+Native on the AMD box (no Docker there):
+
+```bash
+# T1: llama-server on loopback (same flags as the 2026-10-10 eval run)
+~/llama.cpp/build/bin/llama-server -m ~/models/q35/Qwen3.5-9B-Q4_K_M.gguf \
+  -ngl all -fa on -lm none -c 16384 -np 1 -rea off --host 127.0.0.1 --port 8080 --metrics
+# T2: System 2 live (export SYSTEM2_API_KEY first)
+cd amd/system2
+SYSTEM2_LLAMA_URL=http://127.0.0.1:8080 SYSTEM2_MODEL=qwen3.5-9b-q4km python scripts/serve.py
+#   -> "System 2 live (model qwen3.5-9b-q4km via http://127.0.0.1:8080) on http://127.0.0.1:8083"
+# Precompute explanations into the same cache the API reads (re-runs over unchanged requests generate nothing):
+SYSTEM2_LLAMA_URL=http://127.0.0.1:8080 SYSTEM2_MODEL=qwen3.5-9b-q4km \
+  python scripts/precompute.py --requests data/dev_packets.json fixtures/backend/*.json
+```
+
+`precompute.py` accepts dataset files (`{"cases": [{"request": ...}]}`), fixture files (`{"request": ...}`), JSON
+lists and `.jsonl`; `--refresh` regenerates, `--limit N` is a smoke knob. Exit 0 = done (fallbacks included),
+1 = a request was rejected before any model call, 2 = usage/config error.
+
+Response header `X-System2-Cache` (live mode only): `miss` = generated now, `hit` = served from the cache (the body,
+including `model`/`latency_ms`/`tokens_per_sec`, is the stored response from the original generation, so skip hits
+when logging live speed), `off` = no cache configured. The key is `(flag_id, packet_hash, model, prompt_ver)`: a
+changed packet, model or prompt/few-shot pool regenerates. Only `llm`/`retry` results are stored, and every stored
+entry is re-checked against the current packet before it is served.
+
+Backend path: from the laptop run `ssh -N -L 18083:127.0.0.1:8083 <amd-box>`, then set backend
+`SYSTEM2_URL=http://host.docker.internal:18083` with the same `SYSTEM2_API_KEY`. To run System 2 in compose against
+the box instead, tunnel llama-server (`ssh -N -L 18080:127.0.0.1:8080 <amd-box>`) and set
+`SYSTEM2_LLAMA_URL=http://host.docker.internal:18080` and `SYSTEM2_MODEL` in `.env`; a container cache needs
+`SYSTEM2_CACHE_DIR` on a writable mount.
+
+Concurrency: `llama-server -np 1` runs one generation at a time, so concurrent explains queue and can hit the 15 s
+deadline and fall back to the template. That is why the dashboard reads precomputed explanations and live explain
+is for one flag at a time.

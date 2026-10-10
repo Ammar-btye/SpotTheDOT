@@ -18,8 +18,12 @@ The HTTP path does not build its own kit/Neon packet. Phase 1 `analyst/contract.
 `recommended_action`, `confidence` (`low | medium | high`), `insufficient_context`, `flag_id`, `model`,
 `latency_ms`, `tokens_per_sec`, and `path`. Actions use uppercase MCP vocabulary and packet membership;
 `MANUAL_REVIEW` is the documented safe extension. Citations resolve to actual supplied content.
-The live service still serves `model=stub`. The Phase 2 prompt/model pipeline runs offline only (next section);
-Phase 3 wires it into serving.
+Live mode (Phase 3): with `SYSTEM2_LLAMA_URL` and `SYSTEM2_MODEL` set, `/v1/assess` runs the checked pipeline
+(`analyst/live.py`: at most two llama-server attempts in 15 s, then the checked template) and reports `model`,
+`latency_ms`, `tokens_per_sec` and `path` from that run; unset, it serves the stub (`model=stub`). Checked
+`llm`/`retry` explanations are cached in `SYSTEM2_CACHE_DIR` (default `amd/system2/cache`, gitignored) under
+`(flag_id, packet_hash, model, prompt_ver)`, re-checked before serving, and marked by `X-System2-Cache`;
+`scripts/precompute.py` fills the same cache. Runbook: [docs/RUNNING.md](../../docs/RUNNING.md).
 
 The published response schema enforces empty evidence, low confidence, `MANUAL_REVIEW`, and
 the insufficient path when context is insufficient; complete assessments require evidence and the stub path.
