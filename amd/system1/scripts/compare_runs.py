@@ -15,16 +15,23 @@ from pathlib import Path
 def strategy(cfg: dict) -> str:
     a = cfg.get("args", {})
     if a.get("lora"):
-        kind = "LoRA r=%s" % a.get("lora_r")
-    elif a.get("freeze_encoder"):
-        kind = "head only"
+        # runs before the --lora-lr flag trained the adapters at --encoder-lr with llrd
+        lr = a.get("lora_lr", a.get("encoder_lr", 0))
+        bits = ["LoRA r=%s" % a.get("lora_r"), "lora lr %g" % lr, "head lr %g" % a.get("head_lr", 0)]
+        if "lora_lr" not in a and a.get("llrd") not in (None, 1.0):
+            bits.append("llrd %g" % a["llrd"])
+        if a.get("loraplus_ratio", 1) != 1:
+            bits.append("LoRA+ x%g" % a["loraplus_ratio"])
+        if a.get("lora_init", "default") != "default":
+            bits.append(a["lora_init"])
     else:
-        kind = "full FT"
-    bits = [kind, "enc lr %g" % a.get("encoder_lr", 0)]
-    if a.get("llrd") not in (None, 1.0):
-        bits.append("llrd %g" % a["llrd"])
+        bits = ["head only" if a.get("freeze_encoder") else "full FT", "enc lr %g" % a.get("encoder_lr", 0)]
+        if a.get("llrd") not in (None, 1.0):
+            bits.append("llrd %g" % a["llrd"])
     if a.get("oversample"):
         bits.append("oversample")
+    if a.get("seed"):
+        bits.append("seed %s" % a["seed"])
     if a.get("base", "convaiinnovations/laya") != "convaiinnovations/laya":
         bits.append("from %s" % Path(a["base"]).parent.name or a["base"])
     return ", ".join(bits)

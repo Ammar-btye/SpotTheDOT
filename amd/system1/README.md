@@ -33,9 +33,15 @@ how faithfully Laya applies it to text in three renderings and to counterfactual
 
 | file | rows | used for |
 |---|---|---|
-| `train.jsonl` | 3,654 | fine-tuning (real train missions × 3 renderings + 120 synthetic missions) |
+| `train.jsonl` | 4,254 | fine-tuning (real train missions × 3 renderings + 120 synthetic missions + 600 counterfactual pairs) |
 | `calib.jsonl` | 630 | refitting temperatures after each epoch (30 synthetic missions) |
 | `benchmark.jsonl` | 1,557 | validation: run before training and after every epoch |
+
+**Training counterfactuals** (`--train-counterfactuals 600`): one-field edits of *training* events (battery,
+criticality, severity, reading quality) that flip priority or escalation, each paired with its original so the
+trainer batches the two together. Without them the model never saw that a single field flips the label, and
+the counterfactual segment lagged (0.60 for LoRA). They use their own RNG, so `calib.jsonl` and
+`benchmark.jsonl` are byte-identical with or without them.
 
 Rotate the holdout for cross-validation with `--holdout-fold 0|1|2`.
 
@@ -65,16 +71,12 @@ python -c "import torch; print(torch.__version__)"   # peft must not have replac
 mkdir -p checkpoints
 # 3) smoke test first (~minutes): 1 epoch on a slice
 python scripts/finetune.py --out checkpoints/smoke --epochs 1 --train-limit 300 --bench-limit 150 --calib-limit 100
-# 4) a time-boxed full fine-tune (the benchmark runs after every epoch)
-nohup python scripts/finetune.py --out checkpoints/run3_full --epochs 6 --max-minutes 45 \
-  --oversample will_fail=2,anomaly_expected=2 --patience 2 --bench-limit 600 --select-metric real \
-  > checkpoints/run3_full.log 2>&1 &
-# 5) the LoRA comparison (higher LR is normal for adapters)
-nohup python scripts/finetune.py --out checkpoints/run3_lora --lora --encoder-lr 2e-4 --epochs 6 --max-minutes 45 \
-  --oversample will_fail=2,anomaly_expected=2 --patience 2 --bench-limit 600 --select-metric real \
-  > checkpoints/run3_lora.log 2>&1 &
+# 4) the LoRA sweep (research/tech-lora-gap-2026-10-10.md): LoRA at two LRs, a matching full fine-tune,
+#    rank 64 and LoRA+, one after another; ~12 epochs x 14 min each. No time budget: LoRA needs the epochs.
+nohup bash scripts/sweep_lora.sh > checkpoints/sweep.log 2>&1 &
+#    (just the main LoRA run instead: RUNS="A" nohup bash scripts/sweep_lora.sh > checkpoints/sweep.log 2>&1 &)
 ```
-Run 4 and 5 one after the other, not at the same time (they'd share the GPU). If ROCm training produces NaN losses, add `--no-amp`. If the GPU resets mid-run, set `TORCH_BLAS_PREFER_HIPBLASLT=0`
+Runs share one GPU, so the script runs them one after the other (never start two at once). If ROCm training produces NaN losses, add `--no-amp`. If the GPU resets mid-run, set `TORCH_BLAS_PREFER_HIPBLASLT=0`
 (slower). Watch the GPU with `amd-smi monitor --watch 1`. Upload the best model when you're happy:
 `python scripts/finetune.py ... --push-to-hub <user>/laya-spot-triage` (needs `hf auth login`).
 
@@ -105,10 +107,15 @@ Training uses Laya's own batches and losses (`laya==0.4.1`) inside our loop, so 
 | LR warmup, then cosine decay to a floor | `--warmup-ratio 0.06 --schedule cosine --min-lr-ratio 0.05` | no full-LR shock to the encoder at step 1; smooth landing instead of overshooting |
 | Layer-wise LR decay | `--llrd 0.95` | top encoder layer at `--encoder-lr`, each lower layer ×0.95: adapt the task layers, protect pretrained features |
 | No weight decay on norms/biases | always on | standard for transformer fine-tuning |
-| **LoRA (Hugging Face PEFT)** | `--lora --lora-r 16 --lora-alpha 32` | adapters on Wqkv/Wo/Wi (7.9% of params), head trains fully; merged at save time and also saved as `lora_adapter/` for the Hub |
+| **LoRA (Hugging Face PEFT)** | `--lora --lora-r 16 --lora-alpha 32 --lora-dropout 0` | adapters on Wqkv, attn.Wo, Wi and mlp.Wo; the head trains fully; merged at save time and also saved as `lora_adapter/` for the Hub |
+| LoRA LR, flat across layers | `--lora-lr 2e-4` | LoRA's best LR is ~10× the full fine-tune's in every layer; `--llrd` no longer applies to adapters (0.95²⁷ had left the bottom ones at 1/4 LR) |
+| Trainable LayerNorms under LoRA | on (`--no-lora-norms` to freeze) | 58K params incl. `final_norm`, which feeds the head; a full fine-tune trains them. They train at `--encoder-lr` with llrd and land in the merged checkpoint (not in `lora_adapter/`) |
+| LoRA+ / PiSSA | `--loraplus-ratio 16`, `--lora-init pissa_niter_16` | optional sweep points: B trains faster than A; SVD init (use `--lora-lr ~5e-5`; no `lora_adapter/` is written since it applies to a residual base) |
+| Decision thresholds | on (`--no-thresholds` to disable) | per yes/no question, the threshold on P(yes) that maximises macro-F1 on the calibration missions; saved as `decision_thresholds` and applied by `LayaRunner` (demo, service). Temperatures never change the argmax, so this is what moves rare-positive recall. Reports show "Real (argmax)" too |
+| Calibration cross-entropy | always logged; `--select-metric calib-ce` | unsmoothed, so it compares across runs. **Train loss doesn't**: label smoothing 0.05 floors it at ~0.16, and oversampling, dropout and epoch count move it without changing quality |
 | Class rebalancing | `--oversample will_fail=2,anomaly_expected=2` | rare "yes" answers (~20%) were collapsing to "no" (will-fail recall 0% in early runs) |
 | Early stopping | `--patience 2` | stop after N evals without improvement on `--select-metric` |
-| Time budget | `--max-minutes 45` | measures its own speed, fits the epoch count and LR horizon to the budget, re-plans after every epoch |
+| Time budget | `--max-minutes 45` | measures its own speed, fits the epoch count, LR horizon and warmup to the budget, re-plans after every epoch |
 | Continue from a checkpoint | `--base checkpoints/run2/best` | resume from a previous best at a lower LR |
 | fp32 | `--no-amp` | for NaN losses or GEMM errors (now covers the benchmark too) |
 
@@ -119,7 +126,10 @@ Temperatures are refit after every epoch on the held-out calibration missions (n
 ~3× faster than `laya.train.calibration_records`). The best epoch is selected on the validation set, so its
 score is slightly optimistic; `final/` and `compare_runs.py`'s "last" column are reported too.
 
-Compare runs: `python scripts/compare_runs.py checkpoints/run2 checkpoints/run3_full checkpoints/run3_lora`.
+Compare runs: `python scripts/compare_runs.py checkpoints/run2 checkpoints/run3_lora checkpoints/run4_*`.
+For a final LoRA-vs-full verdict: 3 seeds per arm (`RUNS="S1 S2"`), the full benchmark
+(`python scripts/benchmark.py --model checkpoints/<run>/best --out results/<run>`), and call it a tie unless the
+gap is above ~8 points on real (9 held-out missions are noisy).
 
 ## Honest limits
 - 27 real missions. Real-segment CIs (mission-level bootstrap) are wide; read them.

@@ -85,6 +85,17 @@ def write_report(path: Path, name: str, rep: dict, classic: dict, speed: dict, m
         if m and "recall" in m:
             L.append("| %s | %s | %s | %s |" % (q, _f(m["recall"], True), _f(m["precision"], True),
                                                  _ci(rep.get("ci_real", {}).get(q, {}).get("recall"))))
+    if rep.get("argmax"):
+        thr = ", ".join("%s >= %.2f" % kv for kv in sorted(rep["decision_thresholds"].items()))
+        L += ["", "## Decision thresholds (fitted on the calibration missions)", "",
+              "Positive answer when its probability is at least: %s. Without them (plain argmax):" % thr, "",
+              "| Question | Real | Synthetic | Counterfactual | Recall (real) |", "|---|---|---|---|---|"]
+        aseg = rep["argmax"]["by_segment"]
+        for q in sorted(rep["decision_thresholds"]):
+            cells = [_f(aseg.get(s, {}).get(q, {}).get("macro_f1")) if q in aseg.get(s, {}) else "–"
+                     for s in ("real", "synthetic", "counterfactual")]
+            rec = aseg.get("real", {}).get(q, {}).get("recall")
+            L.append("| %s | %s | %s | %s | %s |" % (q, *cells, _f(rec, True) if rec is not None else "–"))
     L += ["", "## Calibration (all segments)", "", "| Question | ECE | Brier | Mean confidence |", "|---|---|---|---|"]
     for q in QUESTION_ORDER:
         m = rep["overall"].get(q)
@@ -122,6 +133,11 @@ def run_benchmark(runner: LayaRunner, bench_rows, train_rows, out_dir: Path, nam
     res = runner.predict(bench_rows, batch_size=batch_size)
     majority = majority_from_rows(train_rows)
     rep = full_report(res["predictions"], majority, with_ci=with_ci)
+    if runner.cfg.get("decision_thresholds"):
+        # the same answers without the calibration-fitted thresholds, comparable with runs that had none
+        plain = [dict(p, pred=p["pred_argmax"], confidence=p["probs"][p["pred_argmax"]]) for p in res["predictions"]]
+        rep["argmax"] = full_report(plain, majority, with_ci=False)
+        rep["decision_thresholds"] = runner.cfg["decision_thresholds"]
     classic = {}
     if with_classic:
         for cname, preds in baselines.run(train_rows, bench_rows).items():

@@ -1,0 +1,13 @@
+# Build context is the repo root (docker build -f db/Dockerfile .). Send only what the db job needs.
+*
+!db/
+!amd/embed/client.py
+!amd/embed/ingest.py
+!amd/system1/triage/
+!amd/system1/data/kit/
+!SPOTDATA/SPOT_KnightHacks_Challenge_Kit Part Two/
+!SPOTDATA/SPOT_KnightHacks_Challenge_Kit Part One/04_ASSETS/sample_inspection_images/
+**/__pycache__
+**/.venv
+**/.DS_Store
+db/.env

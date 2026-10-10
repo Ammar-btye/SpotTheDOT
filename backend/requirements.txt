@@ -1,0 +1,6 @@
+# Backend API (FastAPI). No torch: Laya runs in its own service (amd/system1/service).
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+pydantic==2.11.4
+httpx==0.28.1
+psycopg[binary,pool]==3.2.9

@@ -10,11 +10,16 @@ and adds:
 - **Layer-wise LR decay** (`llrd`): the top encoder layer trains at `encoder_lr`, each layer below at
   `llrd` times the one above, embeddings lowest. Standard for BERT-style fine-tuning on small data.
 - **No weight decay on norms and biases.**
-- **LoRA via Hugging Face PEFT** (`apply_lora`): low-rank adapters on the encoder's Wqkv/Wo/Wi; the base
-  encoder is frozen and Laya's decision head trains fully. `export_state_dict` merges the adapters into
-  plain weights, so checkpoints still load with `laya.load`. The adapter is also saved separately.
+- **LoRA via Hugging Face PEFT** (`apply_lora`): low-rank adapters on the encoder's Wqkv/Wo/Wi (attention
+  and MLP); the base encoder is frozen except its LayerNorms, and Laya's decision head trains fully.
+  Adapters train at their own flat `lora_lr` (no layer-wise decay: LoRA wants ~10x the full fine-tune LR in
+  every layer), optionally with LoRA+ (`loraplus_ratio`: B trains faster than A). `export_state_dict`
+  merges the adapters into plain weights, so checkpoints still load with `laya.load`.
+  See research/tech-lora-gap-2026-10-10.md.
 - **Class rebalancing** (`oversample_positives`): duplicates positive items of rare yes/no questions
   (e.g. will_fail, ~20% positive) so the model can't win by always answering "no".
+- **Counterfactual pairs stay together**: items sharing a `pair` key (an event and its one-field edit) are
+  shuffled as a group, so both land in the same optimizer update and the contrast is learned directly.
 - **Time budget**: after the first optimizer updates the loop measures its speed and shortens the
   schedule (fewer epochs and a matching LR horizon) so training plus evaluation ends by the deadline,
   with the LR fully decayed rather than cut off mid-schedule.
@@ -42,8 +47,10 @@ class LoopConfig:
     epochs: int = 6
     micro_batch: int = 8
     grad_accum: int = 4
-    encoder_lr: float = 2e-5
+    encoder_lr: float = 2e-5            # full fine-tune; under LoRA it only drives the unfrozen LayerNorms
     head_lr: float = 1e-4
+    lora_lr: float = 2e-4               # LoRA adapters, same in every layer (llrd does not apply)
+    loraplus_ratio: float = 1.0         # LoRA+: lora_B trains at lora_lr x ratio (1.0 = plain LoRA)
     warmup_ratio: float = 0.06
     schedule: str = "cosine"            # cosine | linear | constant
     min_lr_ratio: float = 0.05          # LR floor as a fraction of each group's peak
@@ -72,6 +79,8 @@ class LoopConfig:
             raise ValueError("llrd must be in (0, 1]")
         if not 0 <= self.warmup_ratio < 1:
             raise ValueError("warmup_ratio must be in [0, 1)")
+        if self.loraplus_ratio <= 0:
+            raise ValueError("loraplus_ratio must be > 0")
 
 
 # ── data ──────────────────────────────────────────────────────────────────────────────────────
@@ -92,6 +101,7 @@ def items_with_qids(tok, rows: List[dict], max_len: int, head_max_len: int,
                 skipped[reason] = skipped.get(reason, 0) + 1
                 continue
             item["qid"], item["gold"] = qid, r["expected"][qid]
+            item["pair"] = r.get("meta", {}).get("pair")     # counterfactual pair key, if any
             items.append(item)
     return items, skipped
 
@@ -112,12 +122,24 @@ def oversample_positives(items: List[dict], factors: Dict[str, float], positive:
 
 
 # ── LoRA (Hugging Face PEFT) ──────────────────────────────────────────────────────────────────
-def apply_lora(model, r: int = 16, alpha: int = 32, dropout: float = 0.05,
-               targets: Sequence[str] = LORA_TARGETS):
-    """Wrap Laya's encoder with LoRA adapters. The base encoder is frozen; the decision head stays trainable."""
+def apply_lora(model, r: int = 16, alpha: int = 32, dropout: float = 0.0,
+               targets: Sequence[str] = LORA_TARGETS, init="default", train_norms: bool = True):
+    """Wrap Laya's encoder with LoRA adapters. The base encoder is frozen; the decision head stays trainable.
+
+    dropout 0: ModernBERT's own dropouts are all 0, so adapter dropout is noise a full fine-tune doesn't have.
+    init: "default" (B = 0), or a PEFT init such as "pissa_niter_16" or "olora". Run this before .to(device)
+    so the SVD/QR runs on the CPU.
+    train_norms: unfreeze the encoder's LayerNorms (58K params, incl. final_norm, which feeds the head). A full
+    fine-tune trains them; they land in the merged checkpoint but not in lora_adapter/."""
     from peft import LoraConfig, get_peft_model
-    cfg = LoraConfig(r=r, lora_alpha=alpha, lora_dropout=dropout, target_modules=list(targets), bias="none")
+    cfg = LoraConfig(r=r, lora_alpha=alpha, lora_dropout=dropout, target_modules=list(targets), bias="none",
+                     init_lora_weights=True if init == "default" else init)
     model.encoder = get_peft_model(model.encoder, cfg)
+    if train_norms:
+        for m in model.encoder.modules():
+            if isinstance(m, torch.nn.LayerNorm):
+                for p in m.parameters():
+                    p.requires_grad_(True)
     return model
 
 
@@ -160,6 +182,11 @@ def save_laya(model, tok, cfg: dict, path: str) -> None:
         json.dump(cfg, f, indent=2)
     os.replace(tmp, os.path.join(path, "rl_agent_config.json"))
     if is_lora(model):
+        init = model.encoder.peft_config["default"].init_lora_weights
+        if isinstance(init, str) and init.startswith(("pissa", "olora", "corda", "loftq")):
+            # these inits rewrite the base weights, so the adapter only applies to that residual base;
+            # the merged model.safetensors is the checkpoint
+            return
         model.encoder.save_pretrained(os.path.join(path, "lora_adapter"))
 
 
@@ -173,7 +200,9 @@ def param_groups(model, cfg: LoopConfig) -> List[dict]:
     for name, p in model.named_parameters():
         if not p.requires_grad:
             continue
-        if name.startswith("encoder."):
+        if name.startswith("encoder.") and "lora_" in name:
+            lr = cfg.lora_lr * (cfg.loraplus_ratio if "lora_B" in name else 1.0)
+        elif name.startswith("encoder."):
             m = re.search(r"\.layers\.(\d+)\.", name)
             depth = (n_layers - 1 - int(m.group(1))) if m else (n_layers if "embeddings" in name else 0)
             lr = cfg.encoder_lr * (cfg.llrd ** depth)
@@ -229,16 +258,17 @@ def train_loop(model, tok, items: List[dict], cfg: LoopConfig, device: torch.dev
     optimizer = torch.optim.AdamW(groups)
     steps_per_epoch = math.ceil(len(items) / cfg.micro_batch)
     updates_per_epoch = math.ceil(steps_per_epoch / cfg.grad_accum)
-    plan = {"horizon": updates_per_epoch * cfg.epochs, "epochs": cfg.epochs, "max_updates": None}
-    warmup = int(cfg.warmup_ratio * plan["horizon"])
+    plan = {"horizon": updates_per_epoch * cfg.epochs, "epochs": cfg.epochs, "max_updates": None,
+            "warmup_ratio": cfg.warmup_ratio}
+    plan["warmup"] = int(cfg.warmup_ratio * plan["horizon"])     # recomputed if the time budget shrinks the run
     scheduler = torch.optim.lr_scheduler.LambdaLR(
-        optimizer, lambda s: lr_factor(s, plan["horizon"], warmup, cfg))
+        optimizer, lambda s: lr_factor(s, plan["horizon"], plan["warmup"], cfg))
     use_amp = cfg.amp and device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda") if use_amp else None
     params = [p for g in groups for p in g["params"]]
     print("trainer: %s | %d param groups, peak LR %.2g..%.2g (llrd %.2f), warmup %d, %s schedule, %d updates/epoch"
           % (trainable_summary(model), len(groups), min(peak_lrs), max(peak_lrs),
-             cfg.llrd, warmup, cfg.schedule, updates_per_epoch), flush=True)
+             cfg.llrd, plan["warmup"], cfg.schedule, updates_per_epoch), flush=True)
 
     probe_at = max(1, min(budget_probe, updates_per_epoch // 2))   # measure speed early in epoch 1
     torch.manual_seed(cfg.seed)
@@ -247,8 +277,7 @@ def train_loop(model, tok, items: List[dict], cfg: LoopConfig, device: torch.dev
     for epoch in range(cfg.epochs):
         if epoch >= plan["epochs"]:
             break
-        epoch_items = list(items)
-        random.Random(cfg.seed + epoch).shuffle(epoch_items)
+        epoch_items = shuffled_groups(items, cfg.seed + epoch)
         sigma = sigma_at(epoch, cfg.epochs, cfg.sigma_start, cfg.sigma_end)
         total, n_steps, partial, pending = 0.0, 0, False, False
         t_epoch0 = time.time()
@@ -306,6 +335,20 @@ def train_loop(model, tok, items: List[dict], cfg: LoopConfig, device: torch.dev
     return history
 
 
+def shuffled_groups(items: List[dict], seed: int) -> List[dict]:
+    """Shuffle, keeping items that share a `pair` key adjacent. With no pairs this is a plain shuffle
+    (same permutation as random.shuffle on the items)."""
+    groups, index = [], {}
+    for i, it in enumerate(items):
+        key = it.get("pair") or ("item", i)
+        if key not in index:
+            index[key] = len(groups)
+            groups.append([])
+        groups[index[key]].append(it)
+    random.Random(seed).shuffle(groups)
+    return [it for g in groups for it in g]
+
+
 def _step(optimizer, scheduler, scaler, params, clip):
     if scaler is not None:
         scaler.unscale_(optimizer)
@@ -327,7 +370,7 @@ def _fit_budget(plan, updates_done, elapsed, deadline, eval_seconds, updates_per
     per_epoch = updates_per_epoch * sec + eval_seconds
     if rest_of_epoch0 > remaining:
         fit = updates_done + max(1, int((remaining - eval_seconds) / sec))
-        plan.update(epochs=1, horizon=fit, max_updates=fit)
+        plan.update(epochs=1, horizon=fit, max_updates=fit, warmup=min(plan["warmup"], int(plan["warmup_ratio"] * fit)))
         print("time budget: %.2fs/update; epoch 1 alone won't fit, so training stops at update %d of %d "
               "with the LR schedule compressed to match" % (sec, fit, updates_per_epoch), flush=True)
         return
@@ -335,7 +378,9 @@ def _fit_budget(plan, updates_done, elapsed, deadline, eval_seconds, updates_per
     print("time budget: %.2fs/update, %.1f min/epoch incl. eval -> %d of %d epoch(s) fit; LR schedule set to %d epoch(s)"
           % (sec, per_epoch / 60, fit_epochs, epochs, fit_epochs), flush=True)
     if fit_epochs < epochs:
-        plan.update(epochs=fit_epochs, horizon=updates_per_epoch * fit_epochs)
+        horizon = updates_per_epoch * fit_epochs
+        # warmup is a fraction of the run actually done (it was sized for the full horizon before)
+        plan.update(epochs=fit_epochs, horizon=horizon, warmup=int(plan["warmup_ratio"] * horizon))
 
 
 def _replan(plan, epoch_idx, last_epoch_seconds, deadline, updates_done, updates_per_epoch):

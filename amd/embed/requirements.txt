@@ -1,0 +1,9 @@
+# amd/embed/server.py (embedding service). torch is NOT listed on purpose: install it FIRST from the right index
+# (AMD ROCm wheels on the AMD box, the CPU/MPS wheel locally; see README / Dockerfile) so pip never replaces it.
+# Qwen3-Embedding needs sentence-transformers>=2.7 and transformers>=4.51 (model card).
+sentence-transformers>=3.0
+transformers>=4.51
+fastapi>=0.110
+uvicorn>=0.29
+httpx>=0.27          # client.py
+numpy

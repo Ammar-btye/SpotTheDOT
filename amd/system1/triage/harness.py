@@ -6,12 +6,18 @@ mid-training and a saved fine-tuned checkpoint are all measured identically. Tem
 the way `laya.Agent` applies them (per (question type, option count) bucket, else per type).
 `parity_check` confirms agreement with `laya.load(...).predict` on a sample.
 
+Decision thresholds: a checkpoint may carry `decision_thresholds` ({qid: t}) fitted on the calibration
+missions by scripts/finetune.py. For those yes/no questions the positive answer wins when its calibrated
+probability is >= t (instead of > 0.5). Temperature scaling never changes the argmax, so this is what moves
+recall on rare positives (will_fail, anomaly_expected). `pred_argmax` keeps the plain-argmax answer;
+`laya.load(...).predict` does not apply thresholds.
+
 Pinned to laya==0.4.1: `_forward` is a private helper.
 """
 import math
 import os
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from typing import Dict, List, Optional, Sequence
 
 import numpy as np
@@ -19,6 +25,9 @@ import torch
 from laya.common import QTYPES, clamp_temperature, collate_items, temp_bucket, uses_parallel_layout
 from laya.train import (_forward, encode_item, encode_state, load_checkpoint, make_item, resolve_device,
                         target_from_expected, to_internal)
+
+from .metrics import _macro_f1
+from .questions import POSITIVE
 
 
 class LayaRunner:
@@ -43,6 +52,9 @@ class LayaRunner:
     def set_temperatures(self, temperature: Optional[Sequence[float]], by_options: Optional[Dict[str, float]]):
         self.cfg = dict(self.cfg, temperature=list(temperature) if temperature is not None else None,
                         temperature_by_options=by_options or {})
+
+    def set_thresholds(self, thresholds: Optional[Dict[str, float]]):
+        self.cfg = dict(self.cfg, decision_thresholds=dict(thresholds or {}))
 
     def _temp(self, qtype: int, k: int) -> float:
         by_opt = self.cfg.get("temperature_by_options") or {}
@@ -85,33 +97,74 @@ class LayaRunner:
                 self.model.train()
         return out
 
-    def predict(self, rows: List[dict], batch_size: int = 16, calibrated: bool = True) -> dict:
-        """Per-question predictions plus raw logits (kept so temperatures can be refitted later)."""
-        items, metas, skipped = self.build_items(rows)
-        t0 = time.perf_counter()
-        lgs = self.logits(items, batch_size)
-        secs = time.perf_counter() - t0
+    def decide(self, items: List[dict], metas: List[dict], lgs: List[np.ndarray], calibrated: bool = True,
+               thresholds: bool = True) -> List[dict]:
+        """Turn logits into per-question predictions (temperatures, then decision thresholds)."""
+        thr = (self.cfg.get("decision_thresholds") or {}) if thresholds else {}
         preds = []
         for it, m, lg in zip(items, metas, lgs):
             t = self._temp(it["qtype"], it["k"]) if calibrated else 1.0
             z = lg / t
             p = np.exp(z - z.max())
             p /= p.sum()
-            i = int(p.argmax())
-            preds.append({"id": m["row"]["id"], "qid": m["qid"], "gold": m["gold"], "pred": m["options"][i],
-                          "confidence": float(p[i]), "probs": {o: float(v) for o, v in zip(m["options"], p)},
+            probs = {o: float(v) for o, v in zip(m["options"], p)}
+            argmax = m["options"][int(p.argmax())]
+            pred = apply_threshold(m["qid"], probs, thr.get(m["qid"])) if m["qid"] in thr else argmax
+            preds.append({"id": m["row"]["id"], "qid": m["qid"], "gold": m["gold"], "pred": pred,
+                          "pred_argmax": argmax, "confidence": probs[pred], "probs": probs,
                           "logits": [float(v) for v in lg], "qtype": it["qtype"], "k": it["k"],
                           "meta": {k: v for k, v in m["row"]["meta"].items() if k != "features"}})
+        return preds
+
+    def predict(self, rows: List[dict], batch_size: int = 16, calibrated: bool = True) -> dict:
+        """Per-question predictions plus raw logits (kept so temperatures can be refitted later)."""
+        items, metas, skipped = self.build_items(rows)
+        t0 = time.perf_counter()
+        lgs = self.logits(items, batch_size)
+        secs = time.perf_counter() - t0
+        preds = self.decide(items, metas, lgs, calibrated)
         return {"predictions": preds, "skipped": skipped, "items": len(items), "seconds": secs,
                 "items_per_sec": len(items) / secs if secs else math.nan,
                 "rows_per_sec": len(rows) / secs if secs else math.nan}
+
+
+def apply_threshold(qid: str, probs: Dict[str, float], t: Optional[float]) -> str:
+    """The positive answer if its probability >= t, else the most likely other answer."""
+    pos = POSITIVE.get(qid)
+    if t is None or pos not in probs:
+        return max(probs, key=probs.get)
+    if probs[pos] >= t:
+        return pos
+    return max((o for o in probs if o != pos), key=probs.get)
+
+
+def fit_thresholds(preds: List[dict], min_each: int = 10) -> Dict[str, float]:
+    """Per yes/no question, the threshold on P(positive) that maximises macro-F1 on these (calibration)
+    predictions. Ties go to the threshold nearest 0.5. Questions with fewer than `min_each` positives or
+    negatives are left on argmax."""
+    by_q = defaultdict(list)
+    for p in preds:
+        if p["qid"] in POSITIVE and POSITIVE[p["qid"]] in p["probs"]:
+            by_q[p["qid"]].append(p)
+    out = {}
+    for qid, ps in sorted(by_q.items()):
+        pos, golds = POSITIVE[qid], [p["gold"] for p in ps]
+        n_pos = sum(g == pos for g in golds)
+        if min(n_pos, len(golds) - n_pos) < min_each:
+            continue
+        labels = sorted(ps[0]["probs"])
+        best = max((round(t, 2) for t in np.arange(0.05, 0.951, 0.01)),
+                   key=lambda t: (round(_macro_f1(golds, [apply_threshold(qid, p["probs"], t) for p in ps], labels), 4),
+                                  -abs(t - 0.5)))
+        out[qid] = float(best)
+    return out
 
 
 def parity_check(model_path: str, rows: List[dict], runner_preds: List[dict], device: str = "auto") -> dict:
     """Argmax agreement between this harness and `laya.load(...).predict` on the given rows."""
     import laya
     agent = laya.load(model_path, device=None if device == "auto" else device)
-    ours = {(p["id"], p["qid"]): p["pred"] for p in runner_preds}
+    ours = {(p["id"], p["qid"]): p.get("pred_argmax", p["pred"]) for p in runner_preds}   # laya applies no thresholds
     agree = total = 0
     for r in rows:
         res = agent.predict(r["state"], r["questions"])

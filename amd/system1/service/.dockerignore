@@ -1,0 +1,13 @@
+# The build context is the REPO ROOT (docker build -f amd/system1/service/Dockerfile .), so BuildKit reads
+# this file through its sibling `Dockerfile.dockerignore` (a symlink to it). Allowlist: send only what the
+# image COPYs, never checkpoints, venvs or data (gigabytes).
+*
+!amd/system1/triage/
+!amd/system1/service/
+amd/system1/service/tests/
+amd/system1/service/README.md
+**/__pycache__/
+**/*.pyc
+**/.DS_Store
+**/.venv/
+**/.pytest_cache/

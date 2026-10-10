@@ -1,0 +1,219 @@
+# SPOT operator dashboard: THE compose file for the whole project (one file, profiles inside; no per-service or
+# per-environment compose files). Every new or changed container must be added/updated here and in docs/RUNNING.md.
+# Contracts: docs/backend-services-contract.md (ports) and docs/system2-rag-contract.md (DB, embeddings, MCP).
+# Copy .env.example to .env first; COMPOSE_PROFILES there picks the mode. `make up` / `make e2e` / `make test`.
+#
+# Service    Port  Profiles                 What
+# ---------  ----  -----------------------  -------------------------------------------------------------------
+# db         5433  local, hybrid            Postgres 17 + pgvector, local stand-in for Neon (host port: DB_PORT)
+# db-init    -     local, hybrid, neon      one-shot: migrate -> login users -> seed -> ingest (RAG) -> status
+#                                           (seed is non-destructive: never overwrites flags or refills a demo)
+# embed      8081  local, models            Qwen3-Embedding-0.6B, OpenAI-compatible /v1/embeddings (TORCH_VARIANT)
+# system1    8082  local, models            Laya triage model, /v1/predict (TORCH_VARIANT; fine-tune mount)
+# mcp        8090  local, hybrid, neon      MCP context server for System 2 (streamable HTTP /mcp)
+# backend    8000  local, hybrid, neon      FastAPI dashboard API (/api/v1, /docs). ADMIN_TOKEN (header
+#                                           X-Admin-Token) guards /ops, /replay, POST /events; CORS_ORIGINS only
+# system2    8083  (placeholder, below)     teammate's amd/system2/ on branch aatif/system2; llama-server :8080.
+#                                           Not on main: the backend uses SYSTEM2_URL from .env, else templates.
+#
+# Profiles:
+#   local   everything in Docker on CPU (testing; Laya ~3-8 s per event, embedding ~2.3 s per query)
+#   hybrid  db + db-init + mcp + backend in Docker; SYSTEM1_URL / EMBED_URL in .env point at the AMD GPU box,
+#           where system1 and embed run natively (the AMD Jupyter VMs have no root and can't run Docker)
+#   neon    Neon replaces `db`: DATABASE_URL (owner, db-init), BACKEND_DATABASE_URL, MCP_DATABASE_URL in .env
+#   models  embed + system1 on CPU, to pair with neon:  COMPOSE_PROFILES=neon,models
+#
+# Conventions (keep them when adding a service):
+#   - `<<: *service` on every long-running service (restart policy + host.docker.internal for SSH tunnels).
+#   - Services reach each other by service name (http://system1:8082), never localhost.
+#   - Every setting is an env var with a `${VAR:-default}` that works for the local profile; shared blocks are
+#     anchors below (x-db-urls, x-embed-env). Published ports bind to BIND_ADDR (127.0.0.1 by default).
+#   - Dependencies that some profile doesn't start use `required: false`.
+#   - Roles (db/migrations/007_roles.sql): db-init = owner; backend = spot_app member; mcp and system1's call
+#     logging = spot_mcp_reader member (scripts/db_login_roles.py creates the login users).
+
+name: spot
+
+x-service: &service
+  restart: unless-stopped
+  extra_hosts: ["host.docker.internal:host-gateway"]   # reach an SSH tunnel to the AMD box on the host
+
+x-db-urls:   # documentation of the default connection strings (each is overridable from .env)
+  owner: &db-owner-url ${DATABASE_URL:-postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/spot}
+  app:   &db-app-url ${BACKEND_DATABASE_URL:-postgresql://${SPOT_APP_USER:-spot_app_user}:${SPOT_APP_PASSWORD:-spot_app_dev}@db:5432/spot}
+  mcp:   &db-mcp-url ${MCP_DATABASE_URL:-postgresql://${SPOT_MCP_USER:-spot_mcp_user}:${SPOT_MCP_PASSWORD:-spot_mcp_dev}@db:5432/spot}
+
+x-embed-env: &embed-env   # contract §1: every embedding client and the server agree on these
+  EMBED_URL: ${EMBED_URL:-http://embed:8081}
+  EMBED_MODEL: ${EMBED_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+  EMBED_DIM: ${EMBED_DIM:-1024}
+
+services:
+  # ── data ──────────────────────────────────────────────────────────────────────────────────────
+  db:
+    image: pgvector/pgvector:pg17
+    profiles: [local, hybrid]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: spot
+    ports: ["${BIND_ADDR:-127.0.0.1}:${DB_PORT:-5433}:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d spot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # One-shot: migrate -> login users -> seed -> ingest (embeds the RAG corpus) -> status. Idempotent.
+  # `seed` is non-destructive (audit M5): insert-if-missing, and the demo baseline (events + flags) loads only on
+  # the first seed of a database, so `up` never overwrites live/acked flags or refills a reset demo. Never add
+  # --force-reseed here; run it by hand: docker compose run --rm --no-deps --entrypoint db/job.sh db-init seed --force-reseed
+  db-init:
+    build: {context: ., dockerfile: db/Dockerfile}
+    image: spot-db:compose
+    profiles: [local, hybrid, neon]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    restart: "no"
+    depends_on:
+      db: {condition: service_healthy, required: false}
+      embed: {condition: service_healthy, required: false}
+    environment:
+      <<: *embed-env
+      DATABASE_URL: *db-owner-url
+      LOGS_DATABASE_URL: ${LOGS_DATABASE_URL:-}
+      EMBED_DOC_PREFIX: ${EMBED_DOC_PREFIX:-}
+      SPOT_APP_USER: ${SPOT_APP_USER:-spot_app_user}
+      SPOT_APP_PASSWORD: ${SPOT_APP_PASSWORD:-spot_app_dev}
+      SPOT_MCP_USER: ${SPOT_MCP_USER:-spot_mcp_user}
+      SPOT_MCP_PASSWORD: ${SPOT_MCP_PASSWORD:-spot_mcp_dev}
+    volumes: ["./scripts/db_login_roles.py:/app/scripts/db_login_roles.py:ro"]
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        db/job.sh migrate && python scripts/db_login_roles.py && db/job.sh seed
+        && db/job.sh ingest ${DB_INGEST_ARGS:-} && db/job.sh status
+
+  # ── models (CPU in Docker; on the AMD box they run natively, see the hybrid profile) ─────────────
+  embed:
+    <<: *service
+    build:
+      context: amd/embed
+      args: {TORCH_VARIANT: "${TORCH_VARIANT:-cpu}"}
+    image: spot-embed:compose-${TORCH_VARIANT:-cpu}
+    profiles: [local, models]
+    environment:
+      EMBED_MODEL: ${EMBED_MODEL:-Qwen/Qwen3-Embedding-0.6B}
+      EMBED_DIM: ${EMBED_DIM:-1024}
+      HF_HOME: /models
+      HF_TOKEN: ${HF_TOKEN:-}
+      # Server-side encode batch. 32 long docs at fp32 OOM-killed the container (exit 137) in an 8 GB Docker VM
+      # next to system1 during ingest; 8 keeps the peak under ~3.9 GB.
+      EMBED_BATCH: ${EMBED_BATCH:-8}
+    ports: ["${BIND_ADDR:-127.0.0.1}:8081:8081"]
+    volumes: ["hf-cache:/models"]
+    # Healthcheck comes from the image (start period 600 s for the first ~1.2 GB download).
+
+  system1:
+    <<: *service
+    build:
+      context: .
+      dockerfile: amd/system1/service/Dockerfile
+      args: {TORCH_VARIANT: "${TORCH_VARIANT:-cpu}"}
+    image: spot-system1:compose-${TORCH_VARIANT:-cpu}
+    profiles: [local, models]
+    environment:
+      # Base Laya by default. Fine-tune: LAYA_CHECKPOINT=/models/checkpoints/<run>/best (mounted below).
+      LAYA_CHECKPOINT: ${LAYA_CHECKPOINT:-convaiinnovations/laya}
+      LAYA_DEVICE: ${LAYA_DEVICE:-auto}
+      # CPU: 16 (event, question) pairs per forward pass; one 200-pair pass OOM-killed an 8 GB Docker VM.
+      LAYA_MAX_BATCH: ${LAYA_MAX_BATCH:-16}
+      LOGS_DATABASE_URL: ${SYSTEM1_LOGS_DATABASE_URL:-postgresql://${SPOT_MCP_USER:-spot_mcp_user}:${SPOT_MCP_PASSWORD:-spot_mcp_dev}@db:5432/spot}
+      HF_TOKEN: ${HF_TOKEN:-}
+    ports: ["${BIND_ADDR:-127.0.0.1}:8082:8082"]
+    volumes:
+      - "hf-cache:/models/hf"     # same volume as embed (both use <HF_HOME>/hub)
+      - "${LAYA_CHECKPOINT_DIR:-./amd/system1/checkpoints}:/models/checkpoints:ro"
+
+  # ── System 2 placeholder (NOT on main) ─────────────────────────────────────────────────────────
+  # The teammate's explainer lives in amd/system2/ on branch aatif/system2 (POST /v1/assess, port 8083), backed by
+  # llama-server on 8080 on the AMD box. Until it is merged, point the backend at it with SYSTEM2_URL in .env
+  # (e.g. http://host.docker.internal:18083 through the SSH tunnel); unset -> /explain returns the template.
+  # When it lands on main, uncomment and fill in (and add it to the header table and docs/RUNNING.md):
+  #
+  # system2:
+  #   <<: *service
+  #   build: {context: ., dockerfile: amd/system2/Dockerfile}
+  #   image: spot-system2:compose
+  #   profiles: [system2]
+  #   depends_on:
+  #     mcp: {condition: service_healthy}
+  #   environment:
+  #     LLM_URL: ${LLM_URL:-http://host.docker.internal:8080}   # llama-server (AMD box, through the tunnel)
+  #     MCP_URL: http://mcp:8090/mcp
+  #     MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+  #     SYSTEM2_API_KEY: ${SYSTEM2_API_KEY:-}
+  #   ports: ["${BIND_ADDR:-127.0.0.1}:8083:8083"]
+  #   # then set SYSTEM2_URL=http://system2:8083 for the backend
+
+  # ── application ────────────────────────────────────────────────────────────────────────────────
+  mcp:
+    <<: *service
+    build: {context: amd/mcp}
+    image: spot-mcp:compose
+    profiles: [local, hybrid, neon]
+    depends_on:
+      db-init: {condition: service_completed_successfully}
+      embed: {condition: service_healthy, required: false}
+    environment:
+      <<: *embed-env
+      DATABASE_URL: *db-mcp-url
+      LOGS_DATABASE_URL: ${MCP_LOGS_DATABASE_URL:-}
+      # get_flag_context runs ~4 query embeddings; CPU embedding is ~2.3 s each.
+      EMBED_TIMEOUT_S: ${MCP_EMBED_TIMEOUT_S:-20}
+      MCP_MIN_SIMILARITY: ${MCP_MIN_SIMILARITY:-0.40}
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "8090"
+    ports: ["${BIND_ADDR:-127.0.0.1}:8090:8090"]
+
+  backend:
+    <<: *service
+    build: {context: ., dockerfile: backend/Dockerfile}
+    image: spot-backend:compose
+    profiles: [local, hybrid, neon]
+    depends_on:
+      db-init: {condition: service_completed_successfully}
+      mcp: {condition: service_healthy}
+      system1: {condition: service_healthy, required: false}
+      embed: {condition: service_healthy, required: false}
+    environment:
+      <<: *embed-env
+      DATABASE_URL: *db-app-url
+      LOGS_DATABASE_URL: ${BACKEND_LOGS_DATABASE_URL:-}
+      TRIAGE_MODE: ${TRIAGE_MODE:-serial}
+      SYSTEM1_URL: ${SYSTEM1_URL:-http://system1:8082}
+      MCP_URL: ${MCP_URL:-http://mcp:8090/mcp}
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+      SYSTEM2_URL: ${SYSTEM2_URL:-}
+      SYSTEM2_API_KEY: ${SYSTEM2_API_KEY:-}
+      # Sized for CPU (local profile). On the AMD GPU these can drop to the contract defaults (5/10/15/60).
+      SYSTEM1_TIMEOUT_S: ${SYSTEM1_TIMEOUT_S:-30}               # explicit batch calls (forecast, /system1/predict)
+      SYSTEM1_INGEST_TIMEOUT_S: ${SYSTEM1_INGEST_TIMEOUT_S:-10} # per ingest/replay event: fail fast to rules-only
+      EMBED_TIMEOUT_S: ${EMBED_TIMEOUT_S:-20}
+      SEARCH_EMBED_TIMEOUT_S: ${SEARCH_EMBED_TIMEOUT_S:-8}
+      MCP_TIMEOUT_S: ${MCP_TIMEOUT_S:-60}
+      SYSTEM2_TIMEOUT_S: ${SYSTEM2_TIMEOUT_S:-60}
+      BREAKER_COOLDOWN_S: ${BREAKER_COOLDOWN_S:-10}   # effective cooldown = max(this, that client's timeout)
+      # Audit M4: /flags/{id}/context and /explain finish within this, whatever the per-call timeouts above.
+      REQUEST_DEADLINE_S: ${REQUEST_DEADLINE_S:-45}
+      # Audit H3: /ops/*, /replay/*, POST /events* need X-Admin-Token. Unset -> those endpoints answer 503.
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}   # the dashboard's origin(s), comma-separated
+    ports: ["${BIND_ADDR:-127.0.0.1}:8000:8000"]
+
+volumes:
+  pgdata: {}
+  hf-cache:
+    name: ${HF_CACHE_VOLUME:-hf-cache}   # shared with `docker run -v hf-cache:...` in the service READMEs
