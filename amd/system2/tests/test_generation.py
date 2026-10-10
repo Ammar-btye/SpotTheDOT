@@ -222,9 +222,9 @@ def test_reordered_valid_json_is_accepted_over_http(server):
     (lambda o: o.update(answer=1), 'answer'),
 ])
 def test_internal_generation_model_rejects_unsafe_output(mutate, err):
-    g = gen()
+    g, p = gen(), prompts()
     prepared = case('kit-equipment').prepared
-    out = copy.deepcopy(template_assessment(prepared))
+    out = copy.deepcopy(p.example_output(prepared))
     g.validate_generated(out, prepared)
     mutate(out)
     with pytest.raises(ValueError):
@@ -324,7 +324,7 @@ def test_length_terminated_parseable_reply_retries_with_errors(server):
     run = run_pipeline(c.request, g.LlamaGenerator(url))
     assert run.path == 'retry' and [a.status for a in run.attempts] == ['truncated', 'accepted']
     first, second = (r['body']['messages'][-1]['content'] for r in http.requests)
-    assert 'failed' not in first.lower()
+    assert 'Previous reply' not in first
     assert second.startswith(first) and 'truncated' in second[len(first):]
     assert second.count('Previous reply') == 1
 
@@ -409,6 +409,7 @@ def test_metadata_absent_or_invalid_speed_is_null(server):
     body = envelope(json.dumps(valid))
     body['timings']['predicted_per_second'] = -1
     body['usage']['completion_tokens'] = True
+    body['timings']['predicted_n'] = 'many'
     script(http, {'body': body})
     run = run_pipeline(c.request, g.LlamaGenerator(url))
     assert run.path == 'llm' and run.tokens_per_sec is None and run.completion_tokens is None
