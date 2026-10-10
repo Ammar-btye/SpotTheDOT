@@ -7,6 +7,10 @@ with the real packet -> LLM -> post-check pipeline behind the same `create_app` 
 
 Fixture lookup: the fixture whose flag_id matches AND whose category matches the request; otherwise the category's
 default fixture (one non-insufficient fixture per category); otherwise 501.
+
+Auth: the X-API-Key check is HTTP middleware, so it runs before routing and before the body is read. A keyless or
+wrong-key request gets 401 even when its body is not valid JSON (a route dependency would run after FastAPI parses the
+body, leaking a 422). Every path except OPEN_PATHS needs the key.
 """
 import hmac
 import json
@@ -15,8 +19,8 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from fastapi import Depends, FastAPI, HTTPException, Security
-from fastapi.security import APIKeyHeader
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from .contract import CONTRACT_VERSION, AssessRequest, AssessResponse
 
@@ -24,6 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "fixtures"
 MIN_KEY_LEN = 16
 KEY_HEADER = "X-API-Key"
+OPEN_PATHS = frozenset({"/health"})
 FIXTURE_KEYS = {"name", "description", "request", "response"}
 
 Fixture = Tuple[str, AssessRequest, AssessResponse]
@@ -75,17 +80,20 @@ def create_app(api_key: Optional[str] = None, fixtures_dir: Path = FIXTURES) -> 
 
     app = FastAPI(title="SPOTlight System 2 Analyst (stub)", version=CONTRACT_VERSION)
     app.state.fixtures = fixtures
-    header = APIKeyHeader(name=KEY_HEADER, auto_error=False)
 
-    def auth(given: Optional[str] = Security(header)) -> None:
-        if given is None or not hmac.compare_digest(given.encode("utf-8"), expected):
-            raise HTTPException(status_code=401, detail="missing or invalid X-API-Key")
+    @app.middleware("http")
+    async def key_first(request: Request, call_next):
+        if request.url.path not in OPEN_PATHS:
+            given = request.headers.get(KEY_HEADER)       # Starlette decodes header bytes as latin-1
+            if given is None or not hmac.compare_digest(given.encode("latin-1"), expected):
+                return JSONResponse({"detail": "missing or invalid X-API-Key"}, status_code=401)
+        return await call_next(request)
 
     @app.get("/health")
     def health() -> dict:
         return {"status": "ok", "mode": "stub", "contract_version": CONTRACT_VERSION, "fixtures": len(fixtures)}
 
-    @app.post("/v1/assess", response_model=AssessResponse, dependencies=[Depends(auth)])
+    @app.post("/v1/assess", response_model=AssessResponse)
     def assess(body: AssessRequest) -> AssessResponse:
         t0 = time.perf_counter()
         flag = body.flag

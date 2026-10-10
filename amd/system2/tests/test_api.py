@@ -59,6 +59,16 @@ def test_auth_before_validation_401(client):
     assert r.status_code == 401
 
 
+@pytest.mark.parametrize("body", [b"{", b"{not json", b"", b"\xff\xfe"], ids=["brace", "garbage", "empty", "binary"])
+def test_auth_before_body_parse_401(client, body):
+    ct = {"content-type": "application/json"}
+    for h in (ct, dict(ct, **_h("x" * len(TEST_KEY)))):
+        r = client.post("/v1/assess", content=body, headers=h)
+        assert r.status_code == 401, (h, r.status_code, r.text)
+        assert r.json()["detail"] == "missing or invalid X-API-Key"
+    assert client.post("/v1/assess", content=body, headers=dict(ct, **_h())).status_code == 422
+
+
 def _no_flag_id(req):
     del req["flag"]["flag_id"]
 

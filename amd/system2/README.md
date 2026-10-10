@@ -115,7 +115,8 @@ curl -s -X POST http://127.0.0.1:8000/v1/assess \
 
 Status codes for `POST /v1/assess`:
 - **200**: a schema-valid `AssessResponse`.
-- **401**: missing or wrong `X-API-Key`. The key is checked before the body is validated.
+- **401**: missing or wrong `X-API-Key`. The key is checked in middleware before the body is read, so a request
+  without a valid key gets 401 even when its body is not valid JSON.
 - **422**: malformed flag (wrong type, unknown field, broken kind/category rule).
 - **501**: no fixture covers the flag's category.
 
