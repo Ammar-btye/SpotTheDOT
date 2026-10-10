@@ -4,10 +4,12 @@ Every CLI test runs the real scripts/report.py in a subprocess. Model runs talk 
 127.0.0.1 that imitates llama-server, and memory comes from a fake drm tree. No model, GPU or llama.cpp process is
 involved, so every number asserted here is a regression check of the report code, never a measurement.
 """
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -20,7 +22,8 @@ DEV = SYS2 / 'data/dev_packets.json'
 
 from analyst.dataset import load_dataset  # noqa: E402
 from analyst.evaluation import aggregate  # noqa: E402
-from analyst.headline import METRICS, bootstrap_ci, percentile  # noqa: E402
+from analyst.headline import METRICS, SERVED, bootstrap_ci, percentile  # noqa: E402
+from analyst.prompts import example_output, packet_view  # noqa: E402
 
 HELDOUT_CASES = load_dataset(HELDOUT, split='heldout')
 HEADINGS = ('## Reproduce', '## Headline: held-out fold-2 missions', '## Speed',
@@ -176,3 +179,134 @@ def test_wrong_split_rejected_and_usage_errors(tmp_path):
     assert result.returncode == 1 and not out.exists()
     assert report('--runner', 'both', '--out-dir', out).returncode == 2
     assert not out.exists()
+
+
+# ── fake-model run: paired comparison, fallback, speed and memory plumbing ───────────────────
+
+DEV_CASES = load_dataset(DEV)
+BY_EVIDENCE = {json.dumps(packet_view(c.prepared)['evidence'], sort_keys=True): c
+               for c in HELDOUT_CASES + DEV_CASES if not c.prepared.insufficient_context}
+BROKEN = tuple(sorted(c.case_id for c in HELDOUT_CASES if c.category != 'mission')[:3])
+TPS = 41.5
+
+
+def envelope(content, completion=120, prompt=900):
+    return {'model': 'qwen-fake', 'choices': [{'index': 0, 'finish_reason': 'stop',
+                                               'message': {'role': 'assistant', 'content': content}}],
+            'usage': {'prompt_tokens': prompt, 'completion_tokens': completion},
+            'timings': {'predicted_per_second': TPS, 'prompt_n': prompt, 'predicted_n': completion}}
+
+
+@pytest.fixture(scope='module')
+def server():
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            current = json.loads(body['messages'][-1]['content'].split('\n')[1])
+            case = BY_EVIDENCE[json.dumps(current['evidence'], sort_keys=True)]
+            content = ('{"evidence": [' if case.case_id in BROKEN
+                       else json.dumps(example_output(case.prepared)))
+            data = json.dumps(envelope(content)).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *args):
+            pass
+
+    http = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    http.daemon_threads = True
+    worker = threading.Thread(target=http.serve_forever, kwargs={'poll_interval': 0.02}, daemon=True)
+    worker.start()
+    yield 'http://127.0.0.1:%d' % http.server_port
+    http.shutdown()
+    http.server_close()
+    worker.join()
+
+
+@pytest.fixture(scope='module')
+def drm(tmp_path_factory):
+    d = tmp_path_factory.mktemp('drm') / 'card0' / 'device'
+    d.mkdir(parents=True)
+    for name, value in (('mem_info_vram_used', '536870912'), ('mem_info_gtt_used', '6442450944'),
+                        ('vendor', '0x1002'), ('device', '0x1586')):
+        (d / name).write_text(value + '\n')
+    return d.parents[1]
+
+
+@pytest.fixture(scope='module')
+def model_run(server, drm, tmp_path_factory):
+    out = tmp_path_factory.mktemp('report') / 'both'
+    result = report('--runner', 'both', '--model-url', server + '/', '--model', 'qwen-fake',
+                    '--label', 'fake-loopback-test', '--drm-root', drm, '--mem-interval-s', '0.05',
+                    '--out-dir', out, '--quiet')
+    assert result.returncode == 0, result.stderr
+    return out
+
+
+def test_model_run_reports_own_output_and_fallback(model_run):
+    runners = metrics(model_run)['headline']['runners']
+    model = runners['model']
+    for name in ('first_attempt_accepted', 'model_accepted', 'fallback', 'first_attempt_citation_valid'):
+        assert set(model[name]) == {'value', 'count', 'denominator', 'missions', 'ci95'}
+    assert model['fallback']['count'] == 3 and model['fallback']['denominator'] == 38
+    assert model['model_accepted']['count'] == 35 and model['retry']['count'] == 3
+    rows = [r for r in records(model_run) if r['section'] == 'heldout' and r['runner'] == 'model']
+    assert model['aggregates'] == aggregate(rows, 'model')
+    assert model['aggregates']['generation']['fallback'] == {k: model['fallback'][k]
+                                                             for k in ('value', 'count', 'denominator')}
+    assert 'first_attempt_accepted' not in runners['template']
+
+
+def test_model_run_paired_comparison(model_run):
+    comparison = metrics(model_run)['headline']['comparison']
+    assert comparison['model'] == 'model' and comparison['template'] == 'template'
+    assert set(comparison['metrics']) == set(SERVED)
+    for d in comparison['metrics'].values():
+        assert d['pairs'] == 38 and d['missions'] == 8
+        assert d['ci95'] is None or -1 <= d['ci95'][0] <= d['ci95'][1] <= 1
+    # served output is the model's own answer or the checked template, so mechanical checks stay level here
+    assert comparison['metrics']['final_citation_valid']['value'] == 0.0
+
+
+def test_model_run_speed_block(model_run):
+    m = metrics(model_run)
+    speed = m['speed']
+    assert speed['measured'] is True and speed['label'] == 'fake-loopback-test'
+    assert speed['endpoint'].startswith('http://127.0.0.1:') and '@' not in speed['endpoint']
+    assert speed['endpoint_loopback'] is True
+    assert isinstance(speed['latency_ms']['p50'], int) and isinstance(speed['latency_ms']['p95'], int)
+    assert speed['decode_tokens_per_sec']['p50'] == TPS and speed['decode_tokens_per_sec']['n'] == speed['attempts']
+    assert speed['completion_tokens']['max'] == 120 and speed['prompt_tokens']['p50'] == 900
+    assert speed['models'] == ['qwen-fake'] and 'amd-*' in speed['caveat']
+    mem = speed['peak_memory']
+    assert mem['available'] is True and mem['peak']['total_bytes'] >= mem['baseline']['total_bytes']
+    assert mem['cards'] == [{'card': 'card0', 'vendor': '0x1002', 'device': '0x1586'}]
+    assert m['measurement']['label'] == 'fake-loopback-test'
+    text = (model_run / 'report.md').read_text(encoding='utf-8')
+    section = text.split('## Speed', 1)[1].split('\n## ', 1)[0]
+    assert 'fake-loopback-test' in section and '0x1002:0x1586' in section
+    assert 'model − template' in text and '### Fallback and paths' in text
+
+
+def test_model_run_without_memory_sampling(server, tmp_path):
+    out = tmp_path / 'nomem'
+    result = report('--runner', 'both', '--model-url', server, '--model', 'qwen-fake', '--label', 'fake-loopback-test',
+                    '--mem-source', 'none', '--no-dev', '--limit', '4', '--out-dir', out, '--quiet')
+    assert result.returncode == 0, result.stderr
+    mem = metrics(out)['speed']['peak_memory']
+    assert mem['available'] is False and mem['reason'] == 'memory sampling disabled (--mem-source none)'
+
+
+@pytest.mark.parametrize('extra', [
+    ('--model-url', 'http://127.0.0.1:9', '--model', 'x'),                                # no --label
+    ('--model-url', 'http://user:secret@127.0.0.1:9', '--label', 'x'),                    # credentials
+    ('--model-url', 'ftp://127.0.0.1:9', '--label', 'x'),                                 # scheme
+])
+def test_model_usage_errors(tmp_path, extra):
+    out = tmp_path / 'x'
+    result = report('--runner', 'both', '--out-dir', out, *extra)
+    assert result.returncode == 2 and not out.exists()
+    assert 'secret' not in result.stderr

@@ -13,6 +13,11 @@ training-pool dev packets (data/dev_packets.json, a separate section that is nev
 means the run completed). Exit 0 = report written; 1 = a dataset was rejected (unreadable, tampered, or not the
 expected split) before any model call or output write; 2 = usage error; 3 = the run failed after the datasets were
 accepted (class name printed, no capture content, nothing written).
+
+A model run (--runner both) needs --label naming where it ran and records a speed block: p50/p95 latency, decode
+tokens/s, token counts and peak amdgpu VRAM+GTT from sysfs (--mem-source none to disable), attributed to the label,
+the credential-free endpoint, the host and the GPU PCI vendor/device. There is no API-key flag: a bearer key never
+enters argv or the artifacts. Only an amd-* labelled run on the gfx1151 box is an AMD measurement.
 """
 import argparse
 import dataclasses
@@ -30,6 +35,7 @@ from analyst.evaluation import (DEFAULT_SEED, EvalConfig, ModelRunner, TemplateR
                                 is_loopback, load_eval_dataset, publish_files, run_evaluation)
 from analyst.generation import MAX_TOKENS, LlamaGenerator  # noqa: E402
 from analyst.headline import CI_RESAMPLES, CI_SEED, build_metrics, heldout_scope, render  # noqa: E402
+from analyst.memory import DRM_ROOT, MemorySampler  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 HELDOUT = ROOT / 'data' / 'heldout_packets.json'
@@ -62,7 +68,10 @@ def parser():
     p.add_argument('--no-dev', action='store_true', help='skip the development section')
     p.add_argument('--model-url', help='llama-server base URL, e.g. http://127.0.0.1:8080 (--runner both)')
     p.add_argument('--model', help='model ID sent to the server and recorded in the identity')
-    p.add_argument('--label', help='where the measurement ran, e.g. amd-gfx1151-rocm-qwen35-9b-q4km')
+    p.add_argument('--label', help='where it ran, e.g. amd-gfx1151-rocm-qwen35-9b-q4km (required with both)')
+    p.add_argument('--mem-source', choices=('sysfs', 'none'), help='peak memory source; default sysfs with both')
+    p.add_argument('--drm-root', type=Path, default=DRM_ROOT, help='sysfs drm root (testing)')
+    p.add_argument('--mem-interval-s', type=float, default=0.5)
     p.add_argument('--limit', type=int, help='smoke knob: seeded sample of N held-out flags (never headline)')
     p.add_argument('--seed', type=int, default=DEFAULT_SEED)
     p.add_argument('--deadline-s', type=float, default=15.0, help='per-flag pipeline budget, seconds')
@@ -94,7 +103,9 @@ def run(args, argv) -> int:
     config = EvalConfig(seed=args.seed, limit=args.limit, deadline_s=args.deadline_s, timeout_s=args.timeout_s,
                         max_tokens=args.max_tokens, model_url=args.model_url if wants_model else None,
                         model=args.model if wants_model else None, label=args.label)
-    stage = 'runner setup'
+    stage, memory = 'runner setup', None
+    sampler = (MemorySampler(args.drm_root, args.mem_interval_s, enabled=args.mem_source == 'sysfs')
+               if wants_model else None)
     try:
         runners = [TemplateRunner()]
         if wants_model:
@@ -102,14 +113,18 @@ def run(args, argv) -> int:
                                                       timeout_s=args.timeout_s)))
         stage = 'evaluation run'
         started = utc_now()
+        if sampler is not None:
+            sampler.start()
         h = run_evaluation(heldout, runners, config)
         d = None if dev is None else run_evaluation(dev, runners, dataclasses.replace(config, limit=None))
         finished = utc_now()
-        memory = None
     except ValueError as exc:
         print('Report failed during %s (datasets were accepted): %s. No results written.'
               % (stage, type(exc).__name__), file=sys.stderr)
         return 3
+    finally:
+        if sampler is not None:
+            memory = sampler.stop()
     records = [dict(r, section='heldout') for r in h['records']]
     records += [] if d is None else [dict(r, section='development') for r in d['records']]
     identity = {'heldout': h['identity'], 'development': None if d is None else d['identity']}
@@ -155,6 +170,16 @@ def main(argv=None):
         parts = urllib.parse.urlsplit(args.model_url)
         if parts.scheme not in ('http', 'https') or not parts.hostname:
             p.error('--model-url must be http(s)://host[:port]')
+        if parts.username is not None or parts.password is not None or '@' in parts.netloc:
+            p.error('--model-url must not carry credentials')
+        if not args.label or not args.label.strip():
+            p.error('--label is required for --runner both (where the measurement ran)')
+    elif args.model_url or args.mem_source == 'sysfs':
+        p.error('--model-url and --mem-source sysfs need --runner both')
+    if args.mem_source is None:
+        args.mem_source = 'sysfs' if args.runner == 'both' else 'none'
+    if args.mem_interval_s <= 0:
+        p.error('--mem-interval-s must be positive')
     if args.label is None:
         args.label = 'unlabelled'
     if args.limit is not None and args.limit < 1:

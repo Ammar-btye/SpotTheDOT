@@ -28,7 +28,7 @@ import math
 import random
 from typing import Callable, Dict, List, Optional, Sequence
 
-from .evaluation import CHECKS, GROUNDING_LABEL, HELDOUT_SCOPE_NOTE, SCOPE_NOTE, aggregate
+from .evaluation import CHECKS, GROUNDING_LABEL, HELDOUT_SCOPE_NOTE, SCOPE_NOTE, aggregate, latency_summary
 
 REPORT_VERSION = 'system2-report-2026-10-10.1'
 CI_SEED = 20261010
@@ -86,6 +86,9 @@ METRICS = (
 SERVED = ('public_response_valid', 'final_schema_valid', 'final_citation_valid', 'final_numeric_consistent',
           'final_name_consistent', 'final_all_checks', 'agreement_with_validator')
 OWN = tuple(m[0] for m in METRICS if m[2] == MODEL)
+SPEED_CAVEAT = ('Speed is attributed to the label and endpoint above; only an amd-* labelled run on the gfx1151 box is '
+                'an AMD measurement.')
+LIVE_BUDGET_MS = 15000
 METRIC = {m[0]: m for m in METRICS}
 
 LIMITATIONS = [
@@ -161,6 +164,50 @@ def rate_with_ci(rows: Sequence[dict], metric: str, n: int = CI_RESAMPLES, seed:
             'ci95': bootstrap_ci(chosen, _mean_of(success), n, seed)}
 
 
+def paired_diff(model_rows: Sequence[dict], template_rows: Sequence[dict], metric: str, n: int = CI_RESAMPLES,
+                seed: int = CI_SEED) -> dict:
+    """Model minus template rate on the same flags; the CI resamples missions and applies each to both runners."""
+    _, _, _, keep, success = METRIC[metric]
+    template = {r['case_id']: r for r in template_rows if keep(r)}
+    pairs = [(m, template[m['case_id']]) for m in model_rows if keep(m) and m['case_id'] in template]
+
+    def stat(sample):
+        if not sample:
+            return None
+        return (sum(bool(success(m)) for m, _ in sample) - sum(bool(success(t)) for _, t in sample)) / len(sample)
+    return {'value': stat(pairs), 'pairs': len(pairs), 'missions': len({m['mission_id'] for m, _ in pairs}),
+            'ci95': bootstrap_ci(pairs, stat, n, seed, key=lambda pair: pair[0]['mission_id'])}
+
+
+def _nearest(values: Sequence[float]) -> dict:
+    v = sorted(values)
+    if not v:
+        return {'p50': None, 'mean': None, 'min': None, 'max': None, 'n': 0}
+    return {'p50': v[max(0, math.ceil(0.5 * len(v)) - 1)], 'mean': round(sum(v) / len(v), 3), 'min': v[0],
+            'max': v[-1], 'n': len(v)}
+
+
+def speed_block(model_rows: Sequence[dict], memory: Optional[dict], measurement: dict) -> dict:
+    """Latency, decode speed, token counts and peak memory of the held-out model run, with its attribution."""
+    rows = [r for r in model_rows if r['attempt_count'] > 0]
+    if not rows:
+        return {'measured': False, 'reason': 'no model attempts in the held-out run'}
+    attempts = [a for r in rows for a in r['attempts']]
+    latency = latency_summary([r['latency_ms'] for r in rows])
+    speeds = _nearest([a['tokens_per_sec'] for a in attempts if a['tokens_per_sec'] is not None])
+    tokens = {k: {x: _nearest([a[k] for a in attempts if a[k] is not None])[x] for x in ('p50', 'max', 'n')}
+              for k in ('prompt_tokens', 'completion_tokens')}
+    return {'measured': True, 'label': measurement['label'], 'endpoint': measurement['endpoint'],
+            'endpoint_loopback': measurement['endpoint_loopback'], 'host': measurement['host'],
+            'flags': len(rows), 'attempts': len(attempts), 'latency_ms': latency,
+            'within_15s_p95': latency['p95'] is not None and latency['p95'] <= LIVE_BUDGET_MS,
+            'decode_tokens_per_sec': speeds, **tokens,
+            'truncated_attempts': sum(a['status'] == 'truncated' for a in attempts),
+            'timeout_attempts': sum(a['status'] == 'timeout' for a in attempts),
+            'models': sorted({a['model'] for a in attempts if a['model'] and a['model'] != 'template'}),
+            'peak_memory': memory, 'caveat': SPEED_CAVEAT}
+
+
 # ── metrics ──────────────────────────────────────────────────────────────────────────────────
 
 def heldout_scope(eligible: bool) -> dict:
@@ -201,6 +248,15 @@ def build_metrics(records: List[dict], context: dict) -> dict:
     missions = sorted(set(cases.values()))
     scope = dict(context['heldout_scope'], n_flags=len(cases), n_missions=len(missions), missions=missions)
     runners = {name: _runner_block(rows, kinds[name], ci) for name, rows in heldout.items()}
+    models = [n for n in names if kinds.get(n) == 'model']
+    comparison = None
+    if models and 'template' in kinds.values():
+        model, template = models[0], next(n for n in names if kinds.get(n) == 'template')
+        comparison = {'model': model, 'template': template, 'note': 'model minus template on the same flags',
+                      'metrics': {m: paired_diff(heldout[model], heldout[template], m, ci['resamples'], ci['seed'])
+                                  for m in SERVED}}
+    speed = ({'measured': False, 'reason': 'no model runner in this run'} if not models
+             else speed_block(heldout[models[0]], context['memory'], context['measurement']))
     development = None
     if context['identity'].get('development'):
         dev = _by_runner([r for r in records if r['section'] == 'development'], names)
@@ -214,8 +270,8 @@ def build_metrics(records: List[dict], context: dict) -> dict:
         'identity': context['identity'],
         'measurement': context['measurement'],
         'ci': ci,
-        'headline': {'runners': runners, 'comparison': None},
-        'speed': {'measured': False, 'reason': 'no model runner in this run'},
+        'headline': {'runners': runners, 'comparison': comparison},
+        'speed': speed,
         'development': development,
         'limitations': LIMITATIONS,
     }
@@ -236,12 +292,57 @@ def _cell(r: Optional[dict]) -> str:
     return '%s %s (%d/%d flags, %d missions)' % (_pct(r['value']), ci, r['count'], r['denominator'], r['missions'])
 
 
+def _diff(d: Optional[dict]) -> str:
+    if d is None or d['value'] is None:
+        return '-'
+    ci = 'CI n/a' if d['ci95'] is None else '[%+.1f, %+.1f]' % (100 * d['ci95'][0], 100 * d['ci95'][1])
+    return '%+.1f pp %s (%d pairs, %d missions)' % (100 * d['value'], ci, d['pairs'], d['missions'])
+
+
 def _table(L, metrics, names, wanted):
-    runners = metrics['headline']['runners']
-    L += ['| metric | %s |' % ' | '.join(names), '|---|%s' % ('---|' * len(names))]
+    runners, comparison = metrics['headline']['runners'], metrics['headline']['comparison']
+    extra = comparison is not None and any(w in comparison['metrics'] for w in wanted)
+    head = list(names) + (['model − template'] if extra else [])
+    L += ['| metric | %s |' % ' | '.join(head), '|---|%s' % ('---|' * len(head))]
     for name in wanted:
         if any(name in runners[n] for n in names):
-            L.append('| %s | %s |' % (METRIC[name][1], ' | '.join(_cell(runners[n].get(name)) for n in names)))
+            cells = [_cell(runners[n].get(name)) for n in names]
+            if extra:
+                cells.append(_diff(comparison['metrics'].get(name)))
+            L.append('| %s | %s |' % (METRIC[name][1], ' | '.join(cells)))
+
+
+def _mem(m: Optional[dict]) -> str:
+    if m is None:
+        return 'not measured: no memory sampler in this run'
+    if not m['available']:
+        return 'not measured: %s' % m['reason']
+    gpus = ', '.join('%s %s:%s' % (c['card'], c['vendor'], c['device']) for c in m['cards']) or 'unknown GPU'
+    return '%.1f MiB peak (VRAM %.1f + GTT %.1f; baseline %.1f MiB; %d samples) on %s' % (
+        m['peak']['total_mib'], m['peak']['vram_mib'], m['peak']['gtt_mib'], m['baseline']['total_mib'],
+        m['samples'], gpus)
+
+
+def _speed(L, speed):
+    if not speed['measured']:
+        L.append('Not measured: %s.' % speed['reason'])
+        return
+    lat, tps = speed['latency_ms'], speed['decode_tokens_per_sec']
+    L += ['Label `%s`, endpoint `%s` (loopback %s), host `%s`. %s' % (
+              speed['label'], speed['endpoint'], speed['endpoint_loopback'], speed['host'], speed['caveat']), '',
+          '| | |', '|---|---|',
+          '| latency p50 / p95 per flag (nearest-rank, incl. retry/fallback) | %s / %s ms (%d flags) |' % (
+              lat['p50'], lat['p95'], lat['n']),
+          '| p95 within the 15 s live budget | %s |' % ('yes' if speed['within_15s_p95'] else 'no'),
+          '| decode tokens/s p50 / mean (min-max, n attempts) | %s / %s (%s-%s, %d) |' % (
+              tps['p50'], tps['mean'], tps['min'], tps['max'], tps['n']),
+          '| prompt tokens p50 / max | %s / %s |' % (speed['prompt_tokens']['p50'], speed['prompt_tokens']['max']),
+          '| completion tokens p50 / max | %s / %s |' % (
+              speed['completion_tokens']['p50'], speed['completion_tokens']['max']),
+          '| truncated / timed-out attempts | %d / %d of %d |' % (
+              speed['truncated_attempts'], speed['timeout_attempts'], speed['attempts']),
+          '| peak device memory | %s |' % _mem(speed['peak_memory']),
+          '| models observed | %s |' % (', '.join(speed['models']) or '-')]
 
 
 def render(metrics: dict) -> str:
@@ -270,6 +371,16 @@ def render(metrics: dict) -> str:
         _table(L, metrics, names, OWN)
     else:
         L.append('No model runner in this run.')
+    model_names = [n for n in names if metrics['headline']['runners'][n]['kind'] == 'model']
+    if model_names:
+        L += ['', '### Fallback and paths', '']
+        for n in model_names:
+            r = metrics['headline']['runners'][n]
+            L += ['- `%s` fallback to the checked template: %s' % (n, _cell(r['fallback'])),
+                  '- `%s` retry: %s' % (n, _cell(r['retry']))]
+        for n in names:
+            paths = metrics['headline']['runners'][n]['aggregates']['paths']
+            L.append('- `%s` paths: %s' % (n, ', '.join('%s %d' % kv for kv in paths.items())))
     L += ['', '### By category', '', '| category | %s |' % ' | '.join(names), '|---|%s' % ('---|' * len(names))]
     categories = sorted({c for r in metrics['headline']['runners'].values() for c in r['by_category']})
     for c in categories:
@@ -281,8 +392,7 @@ def render(metrics: dict) -> str:
                 ', model served %d, fallback %d' % (e['model_accepted'], e['fallback'])))
         L.append('| %s | %s |' % (c, ' | '.join(cells)))
     L += ['', '## Speed', '']
-    speed = metrics['speed']
-    L.append('Not measured: %s.' % speed['reason'] if not speed['measured'] else '')
+    _speed(L, metrics['speed'])
     L += ['', '## Development set (training missions; not headline)', '']
     dev = metrics['development']
     if dev is None:
