@@ -1,0 +1,36 @@
+flowchart LR
+    subgraph client ["Clients"]
+        consoleUi["Operator Console - Next.js UI, Figma design (Figma, NextEra)"]
+        replayStreamer["SPOT Replay Streamer - kit replay.ndjson (NextEra)"]
+    end
+    subgraph gateway ["Next.js Route Handlers"]
+        nextApi["Next.js API Routes /api"]
+    end
+    subgraph service ["Services"]
+        triage["System 1 Triage - rules and stats, local"]
+        consoleApi["Console API - views, acks, debriefs"]
+        worker["System 2 Worker - escalation poller"]
+        analyst["System 2 Analyst - FastAPI and HF model on ROCm, Radeon 8060S (AMD, Hugging Face)"]
+        syncJob["Databricks Sync Job"]
+    end
+    subgraph datastore ["Data"]
+        neon["Neon Postgres - events, flags, assessments, insights, risk scores (Neon)"]
+    end
+    subgraph external ["External Platforms"]
+        databricks["Databricks Free Edition - Delta medallion and MLflow risk model (Databricks)"]
+        hfHub["Hugging Face Hub - open models and published dataset (Hugging Face)"]
+    end
+
+    consoleUi -->|"HTTPS polling"| nextApi
+    replayStreamer -->|"POST events"| nextApi
+    nextApi -->|"Routes ingest"| triage
+    nextApi -->|"Routes console"| consoleApi
+    triage -->|"Escalates flags"| worker
+    triage -->|"Writes flags, reads risk"| neon
+    consoleApi -->|"POST v1 debrief"| analyst
+    consoleApi -->|"Reads views, writes acks"| neon
+    worker -->|"POST v1 assess"| analyst
+    worker -->|"Writes assessments"| neon
+    syncJob -->|"Upserts insights, risk"| neon
+    analyst -.->|"HF Hub: model weights"| hfHub
+    syncJob -.->|"Databricks: gold tables"| databricks
