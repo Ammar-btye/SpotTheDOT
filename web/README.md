@@ -1,29 +1,60 @@
-# web: SPOTlight operator console (Next.js)
+# SPOTlight dashboard
 
-The operator-facing UI. The system map is in `docs/ARCHITECTURE.md`.
+Run the frontend and backend together from the repository root:
 
 ```bash
-cd web && npm install && npm run dev   # http://localhost:3000
+make up
 ```
 
-## Current state (2026-10-10)
-- One page, `/` (`src/app/page.tsx`): the shift-start briefing. It shows the hidden-failures headline, stat tiles, the priority queue and the battery-cliff chart.
-- The other sidebar items (Missions, Analytics, Assets, AI review, Settings) are placeholders (`src/components/shell/nav.ts`).
-- **Data comes from the kit CSVs in `data/kit/`, read on the server** (`src/lib/kit.ts`, `src/lib/analysis.ts`). The page doesn't call the backend yet.
+Open http://localhost:3000. Docker supplies Node.js and installs frontend dependencies automatically.
+To start just the dashboard against the existing Docker backend:
 
-## Next: wire it to the backend
-The FastAPI backend (`backend/`, port 8000) already serves everything this page computes, plus the parts it can't compute itself:
-- the live feed (`/api/v1/events`)
-- Laya + rules flags (`/api/v1/flags`)
-- explanations (`/api/v1/flags/{id}/explain`)
-- forecasts, insights and search
+```bash
+docker compose up -d web
+```
 
-Backend CORS allows `http://localhost:3000`. Routes are listed in `backend/README.md`.
+The overview fetches `/api/dashboard` immediately and every 10 seconds while visible. This Next.js server
+route requests `/api/v1/insights/overview`, `/flags?status=OPEN&limit=500`, `/assets`, `/locations`, and
+`/insights/reliability?group_by=battery_band` from FastAPI. Backend order and scores are preserved.
+Up to 500 open escalated flags are displayed, with the total shown when the queue is larger. Metrics and
+battery bands come from backend data, replacing the frontend CSV analysis. Failed requests show an error
+and Retry; a failed refresh retains the last successful data with a connection warning. Refresh now
+requests an immediate update.
 
-## Design rules (Figma track)
-- Never show status by color alone: use color + icon + word.
-- Everything works from the keyboard.
-- Text meets WCAG AA contrast.
-- Dark operator theme, with a light toggle.
+The V2 comparison uses the backend's matched-battery metric (actions above 40% battery), rather than
+unadjusted gain. Click a flag to see its evidence, status and action history. Load explanation requests
+the backend's explanation on demand, with template/stub output labeled. Acknowledge or Resolve updates
+the backend and removes the flag from the open queue. The panel stays open with Reopen flag available;
+reopening returns it to OPEN and retains notes and audit history. The shell's search field remains unfinished.
 
-`db/schema.sql` here is a legacy schema that nothing runs. The real schema is `db/migrations/` at the repo root.
+## Reversible features
+
+Set any of these in the root `.env` to `false` and run `docker compose up -d --no-deps web`:
+
+```dotenv
+FEATURE_FLAG_DETAILS=true
+FEATURE_FLAG_ACTIONS=true
+FEATURE_FLAG_EXPLANATIONS=true
+```
+
+Defaults are `true`. Actions and explanations can be disabled independently while details remain
+available. Disabling details also disables both dependent features. Disabled features are hidden and
+their Next.js routes reject requests. Set them back to `true` and run the same command to restore them.
+The switches do not erase data or change the underlying FastAPI endpoints, and are not authentication.
+For native development set them in `web/.env.local` and restart the dev server.
+
+Reopen reverses the flag's status change; it does not delete the recorded acknowledgement, resolution,
+or note. After closing an acknowledged/resolved flag, reopen its detail at `/?flag=<flag_id>`.
+
+For native development with Node.js installed:
+
+```bash
+cd web
+npm ci
+npm run dev
+```
+
+The default backend is `http://127.0.0.1:8000/api/v1`. Set `BACKEND_URL` in `web/.env.local` to change it.
+In Docker, set `WEB_BACKEND_URL` in the root `.env` instead. Include `/api/v1` in either URL. These are
+server settings; the browser always requests its own `/api/dashboard` origin. No frontend admin secret
+or browser CORS configuration is required for these reads.

@@ -1,7 +1,7 @@
 import { Panel } from "./Panel";
 import type { BatteryBand } from "@/lib/types";
 
-/* Four bars, drawn with plain CSS rather than a chart library — at this size a
+/* Battery bands, drawn with plain CSS rather than a chart library — at this size a
    library costs a client bundle and a hydration boundary for no benefit.
    Recharts is installed if a later chart needs tooltips or axes.
 
@@ -24,9 +24,10 @@ export function BatteryCliff({
       delay={delay}
     >
       <div className="flex flex-1 items-end gap-3" style={{ minHeight: 160 }}>
-        {bands.map((b, i) => {
+        {bands.length === 0 && <p className="text-sm text-muted">No action reliability data yet.</p>}
+        {bands.map((b) => {
           // The lowest band is the story: call it out in red.
-          const isCliff = i === 0;
+          const isCliff = b.band === "≤25";
           return (
             <div key={b.band} className="flex flex-1 flex-col items-center gap-2">
               <span className="nums font-mono text-sm font-semibold text-ink">
