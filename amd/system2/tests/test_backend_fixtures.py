@@ -1,5 +1,6 @@
 """Representative backend packets are integration examples, not headline eval data."""
 import ast
+import copy
 import json
 import sys
 from pathlib import Path
@@ -60,3 +61,24 @@ def test_mcp_action_vocabulary_does_not_drift():
             continue
         actions = request["context"]["allowed_actions"]
         assert set(actions) == set(categories[request["flag"]["category"]])
+
+
+@pytest.mark.parametrize("section", ["facts", "policy", "event"])
+def test_equipment_cites_supplied_fact_document_and_event(section):
+    pair = json.loads((ROOT / "fixtures/backend/equipment.json").read_text())
+    request = copy.deepcopy(pair["request"])
+    context = request["context"]
+    # Make each original source the first available evidence in turn. The real
+    # stub must cite doc_ids exactly as supplied, without prefix remapping.
+    for name in ("facts", "policy", "event", "flag"):
+        if name != section:
+            context.pop(name, None)
+    context.pop("citation_ids")
+    prepared = normalize_packet(BackendAssessRequest.model_validate(request))
+    identifier, content = next(iter(prepared.content.items()))
+    client = TestClient(create_app(api_key=KEY))
+    response = client.post("/v1/assess", json=request, headers={"X-API-Key": KEY})
+    assert response.status_code == 200, response.text
+    assert response.json()["evidence"] == [{"claim": content, "ids": [identifier]}]
+    if section == "policy":
+        assert identifier == "policy:anomaly_severity"
