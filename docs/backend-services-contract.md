@@ -161,7 +161,17 @@ the next `/explain` retries System 2 (and replaces it on success); when unset, t
   empty evidence, low confidence, MANUAL_REVIEW and path insufficient_context, before generation.
   The flat response is `evidence[{claim,ids}]`, `answer`, `question`, `recommended_action`, `confidence`
   (high/medium/low), `insufficient_context`, integer `flag_id`, `model`, nonnegative `latency_ms`,
-  nullable `tokens_per_sec`, and `path`. Every output object rejects extras. Model is `stub` for this phase.
+  nullable `tokens_per_sec`, and `path`. Every output object rejects extras. Response metadata (ADDED
+  2026-10-10, additive widening under the same version marker): `model` is a nonblank string (default `stub`);
+  `path` ∈ `stub | llm | retry | fallback | insufficient_context` (`llm` = first model attempt passed the checks,
+  `retry` = second attempt after one retry with the check errors, `fallback` = the checked template after both
+  attempts failed); `latency_ms` is a nonnegative integer and `tokens_per_sec` a finite nonnegative number or
+  null (booleans, NaN and infinity are rejected). Path rules: `insufficient_context` requires
+  insufficient_context true, empty evidence, low confidence and MANUAL_REVIEW; every other path requires
+  insufficient_context false and at least one evidence item; `stub` requires model `stub`, `fallback` requires
+  model `template`, and `llm`/`retry` name the serving model (never `stub` or `template`). Metadata stays flat:
+  no nested attempt or debug objects. The live `/v1/assess` still returns only `stub` and `insufficient_context`
+  in this phase; `llm`/`retry`/`fallback` come from the offline checked pipeline until Phase 3 wires it in.
   Ordinary actions follow MCP ALL_ACTIONS and packet membership; System 2 explicitly extends the vocabulary
   with MANUAL_REVIEW, appended internally without mutating caller context. Each citation resolves to actual
   supplied content. X-API-Key authorization runs before parsing (401 for missing/wrong keys).
