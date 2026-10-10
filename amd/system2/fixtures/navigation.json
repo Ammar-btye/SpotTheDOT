@@ -1,0 +1,114 @@
+{
+  "name": "navigation",
+  "description": "Navigation flag from real kit event act-A0037 (training mission M004): a successful navigation step at WP06 that raised a HIGH LOCALIZATION_ISSUE beside the CRITICAL Heat Exchanger 17. Demonstrates meta.path first_pass. All numbers computed from amd/system1/data/kit with triage.policy 2026-10-10.1.",
+  "request": {
+    "flag": {
+      "flag_id": "flag:act-A0037",
+      "kind": "action",
+      "event_id": "act-A0037",
+      "mission_id": "M004",
+      "action_id": "A0037",
+      "timestamp": "2026-09-02T18:21:00",
+      "category": "navigation",
+      "priority": "P1",
+      "escalate": true,
+      "reading_trust": "none",
+      "reasons": [
+        {"rule": "anomaly_severity", "text": "LOCALIZATION_ISSUE anomaly at severity HIGH"},
+        {"rule": "critical_asset", "text": "Heat Exchanger 17 has criticality CRITICAL"}
+      ],
+      "scores": {},
+      "source": "policy",
+      "split": "train"
+    }
+  },
+  "response": {
+    "contract_version": "2026-10-10.1",
+    "flag_id": "flag:act-A0037",
+    "explanation": {
+      "evidence": [
+        {"claim": "SPOT logged a HIGH-severity LOCALIZATION_ISSUE at WP06 even though the navigation step itself succeeded.",
+         "ids": ["E1", "E2"]},
+        {"claim": "The issue sits beside Heat Exchanger 17, a CRITICAL asset, which is what makes this P1.",
+         "ids": ["S1", "F1"]},
+        {"claim": "WP06 has failed localization before: A0134 on the same heat exchanger in mission M014.",
+         "ids": ["F2", "I1"]}
+      ],
+      "answer": "Re-run SPOT's localization check at WP06 Compressor Area before trusting its position there. A HIGH localization issue beside the CRITICAL Heat Exchanger 17 means later inspections could be logged against the wrong place.",
+      "question": "Is SPOT's position at WP06 reliable enough to keep inspecting Heat Exchanger 17?",
+      "recommended_action": "relocalize_robot",
+      "confidence": "med",
+      "insufficient_context": false
+    },
+    "packet": {
+      "flag": {
+        "flag_id": "flag:act-A0037",
+        "kind": "action",
+        "event_id": "act-A0037",
+        "mission_id": "M004",
+        "action_id": "A0037",
+        "timestamp": "2026-09-02T18:21:00",
+        "category": "navigation",
+        "priority": "P1",
+        "escalate": true,
+        "reading_trust": "none",
+        "reasons": [
+          {"rule": "anomaly_severity", "text": "LOCALIZATION_ISSUE anomaly at severity HIGH"},
+          {"rule": "critical_asset", "text": "Heat Exchanger 17 has criticality CRITICAL"}
+        ],
+        "scores": {},
+        "source": "policy",
+        "split": "train"
+      },
+      "event": [
+        {"id": "E1", "ref": "actions.csv:A0037",
+         "text": "Action A0037, mission M004 step 7: NAVIGATION SUCCESS after 30 s at battery 43%.",
+         "data": {"action_type": "NAVIGATION", "status": "SUCCESS", "failure_type": null,
+                  "sequence": 7, "duration_sec": 30, "battery_pct": 43}},
+        {"id": "E2", "ref": "anomalies.csv:AN025",
+         "text": "Anomaly AN025: LOCALIZATION_ISSUE, severity HIGH, operator review required.",
+         "data": {"anomaly_type": "LOCALIZATION_ISSUE", "severity": "HIGH", "operator_review_required": true}}
+      ],
+      "facts": [
+        {"id": "F1", "text": "Severity HIGH on a CRITICAL-criticality asset gives P1, and a LOCALIZATION_ISSUE anomaly gives navigation, under policy 2026-10-10.1.",
+         "data": {"severity": "HIGH", "criticality": "CRITICAL", "priority": "P1", "category": "navigation"}},
+        {"id": "F2", "text": "WP06 has 1 kit localization/navigation failure (A0134 LOCALIZATION_FAILURE, mission M014) and 1 navigation anomaly (this one) across 17 actions.",
+         "data": {"nav_failures": 1, "nav_anomalies": 1, "actions": 17, "failed_action": "A0134", "failed_mission": "M014"}}
+      ],
+      "asset": [
+        {"id": "S1", "ref": "assets.csv:HX-217",
+         "text": "HX-217 Heat Exchanger 17, type Heat Exchanger, criticality CRITICAL, located at WP06.",
+         "data": {"asset_id": "HX-217", "asset_type": "Heat Exchanger", "criticality": "CRITICAL", "location_id": "WP06"}},
+        {"id": "S2", "text": "HX-217 has 2 anomalies across 20 kit actions.",
+         "data": {"anomalies": 2, "actions": 20}}
+      ],
+      "waypoint": [
+        {"id": "W1", "ref": "locations.csv:WP06",
+         "text": "WP06 Compressor Area, zone MECHANICAL, floor 1, environment HIGH_NOISE.",
+         "data": {"location_id": "WP06", "zone_type": "MECHANICAL", "floor": 1, "environment": "HIGH_NOISE"}},
+        {"id": "W2", "text": "WP06 actions succeeded 15 of 17.",
+         "data": {"success": 15, "total": 17}}
+      ],
+      "incidents": [
+        {"id": "I1", "ref": "actions.csv:A0134",
+         "text": "A0134: NAVIGATION FAILED with LOCALIZATION_FAILURE on HX-217 Heat Exchanger 17 at WP06, mission M014.",
+         "data": {"failure_type": "LOCALIZATION_FAILURE", "asset_id": "HX-217", "location_id": "WP06", "mission_id": "M014", "status": "FAILED"}},
+        {"id": "I2", "ref": "anomalies.csv:AN033",
+         "text": "AN033: LOCALIZATION_ISSUE severity MEDIUM on PANEL-215 Electrical Panel 15 at WP01, mission M024, action FAILED.",
+         "data": {"severity": "MEDIUM", "asset_id": "PANEL-215", "location_id": "WP01", "mission_id": "M024", "status": "FAILED"}}
+      ],
+      "allowed_actions": ["clear_route_obstruction", "relocalize_robot", "reinspect_next_mission", "monitor", "manual_review"],
+      "validator_action": "relocalize_robot",
+      "missing": [],
+      "question": "Explain why flag flag:act-A0037 matters and what the operator should do next."
+    },
+    "meta": {
+      "model": "fixture",
+      "prompt_ver": null,
+      "path": "first_pass",
+      "latency_ms": 0,
+      "tokens_per_sec": null,
+      "packet_hash": null
+    }
+  }
+}
