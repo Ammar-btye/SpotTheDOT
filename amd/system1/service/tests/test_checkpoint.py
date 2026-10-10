@@ -1,14 +1,27 @@
-"""Checkpoint resolution: an HF repo subfolder (LAYA_CHECKPOINT_SUBDIR) and the base-Laya fallback. No network."""
+"""Checkpoint resolution: an HF repo subfolder (LAYA_CHECKPOINT_SUBDIR) and the base-Laya fallback. No network.
+
+The resolve_checkpoint tests need the model stack (service.engine imports triage.harness -> numpy/torch, and they
+patch huggingface_hub / laya.train), so they skip when it isn't installed, e.g. the fast CI job. The load_engine
+and Settings tests only need the service itself and always run.
+"""
 import os
 
 import pytest
 
-from service import engine as engine_mod
 from service.app import load_engine
 from service.config import Settings
 
 
+def _engine_mod():
+    """service.engine, or skip when the model stack (numpy/torch, huggingface_hub, laya) isn't installed."""
+    for mod in ("numpy", "torch", "huggingface_hub", "laya.train"):
+        pytest.importorskip(mod, reason="model stack not installed (fast mode)")
+    from service import engine
+    return engine
+
+
 def test_subdir_downloads_only_that_folder(tmp_path, monkeypatch):
+    engine_mod = _engine_mod()
     calls = {}
 
     def fake_snapshot(repo, allow_patterns):
@@ -23,12 +36,14 @@ def test_subdir_downloads_only_that_folder(tmp_path, monkeypatch):
 
 
 def test_missing_subdir_is_an_error(tmp_path, monkeypatch):
+    engine_mod = _engine_mod()
     monkeypatch.setattr("huggingface_hub.snapshot_download", lambda repo, allow_patterns: str(tmp_path))
     with pytest.raises(FileNotFoundError):
         engine_mod.resolve_checkpoint("Jyler/KnightHacks-Laya-Model", "nope/best")
 
 
 def test_local_dir_ignores_subdir(tmp_path, monkeypatch):
+    engine_mod = _engine_mod()
     monkeypatch.setattr("huggingface_hub.snapshot_download", lambda *a, **k: pytest.fail("must not download"))
     monkeypatch.setattr("laya.train.resolve_checkpoint_dir", lambda c: c)
     assert engine_mod.resolve_checkpoint(str(tmp_path), "run/best") == str(tmp_path)
