@@ -20,6 +20,11 @@ The HTTP path does not build its own kit/Neon packet. Phase 1 `analyst/contract.
 `MANUAL_REVIEW` is the documented safe extension. Citations resolve to actual supplied content.
 This phase serves `model=stub`; the full prompt/model pipeline remains Phase 2 work.
 
+The published response schema enforces empty evidence, low confidence, `MANUAL_REVIEW`, and
+the insufficient path when context is insufficient; complete assessments require evidence and the stub path.
+Citation resolution and membership of the recommended action in the supplied packet remain runtime checks,
+because the static response schema has no access to that request's content or allowed actions.
+
 Six current fixture pairs are `fixtures/backend/equipment.json`, `fixtures/backend/robot_health.json`,
 `fixtures/backend/navigation.json`, `fixtures/backend/data_quality.json`, `fixtures/backend/mission_health.json`,
 and `fixtures/backend/insufficient_context.json`. Use their `request` objects for HTTP calls.

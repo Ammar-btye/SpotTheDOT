@@ -46,7 +46,18 @@ class BackendEvidence(BaseModel):
 
 
 class BackendAssessResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False, revalidate_instances="always")
+    model_config = ConfigDict(
+        extra="forbid", strict=True, allow_inf_nan=False, revalidate_instances="always",
+        json_schema_extra={
+            "if": {"properties": {"insufficient_context": {"const": True}},
+                   "required": ["insufficient_context"]},
+            "then": {"properties": {
+                "evidence": {"maxItems": 0}, "confidence": {"const": "low"},
+                "recommended_action": {"const": "MANUAL_REVIEW"},
+                "path": {"const": "insufficient_context"}}},
+            "else": {"properties": {"evidence": {"minItems": 1}, "path": {"const": "stub"}}},
+        },
+    )
     evidence: list[BackendEvidence]
     answer: str = Field(min_length=1)
     question: str

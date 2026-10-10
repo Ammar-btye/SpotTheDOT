@@ -96,6 +96,53 @@ def test_equipment_http_matches_published_models():
 BACKEND_EXAMPLES = ("equipment", "robot_health", "navigation", "data_quality", "mission", "insufficient_context")
 
 
+def _matches_safety_keywords(instance, schema):
+    """Evaluate the published safety subset independently of Pydantic/export rendering.
+
+    This is deliberately a focused keyword evaluator, not a general JSON Schema validator.
+    Unknown keywords fail so tests cannot accidentally ignore a new safety constraint.
+    """
+    assert set(schema) <= {"properties", "required", "const", "minItems", "maxItems"}
+    if "const" in schema and (type(instance) is not type(schema["const"]) or instance != schema["const"]):
+        return False
+    if "minItems" in schema and len(instance) < schema["minItems"]:
+        return False
+    if "maxItems" in schema and len(instance) > schema["maxItems"]:
+        return False
+    if any(key not in instance for key in schema.get("required", [])):
+        return False
+    return all(_matches_safety_keywords(instance[key], rule)
+               for key, rule in schema.get("properties", {}).items() if key in instance)
+
+
+def _published_safety_accepts(response):
+    schema = _load("assess_response.schema.json")
+    branch = "then" if _matches_safety_keywords(response, schema["if"]) else "else"
+    return _matches_safety_keywords(response, schema[branch])
+
+
+@pytest.mark.parametrize("name", BACKEND_EXAMPLES)
+def test_published_safety_conditions_accept_valid_examples(name):
+    pair = json.loads((ROOT / "fixtures/backend" / (name + ".json")).read_text(encoding="utf-8"))
+    assert _published_safety_accepts(pair["response"])
+
+
+@pytest.mark.parametrize("name,changes", [
+    ("insufficient_context", {"confidence": "high"}),
+    ("insufficient_context", {"recommended_action": "MONITOR"}),
+    ("insufficient_context", {"evidence": [{"claim": "Unsupported", "ids": ["F1"]}]}),
+    ("insufficient_context", {"path": "stub"}),
+    ("equipment", {"evidence": []}),
+    ("equipment", {"path": "insufficient_context"}),
+])
+def test_published_safety_conditions_reject_each_inconsistent_response(name, changes):
+    pair = json.loads((ROOT / "fixtures/backend" / (name + ".json")).read_text(encoding="utf-8"))
+    response = dict(pair["response"], **changes)
+    assert not _published_safety_accepts(response)
+    with pytest.raises(ValidationError):
+        BackendAssessResponse.model_validate(response)
+
+
 @pytest.mark.parametrize("name", BACKEND_EXAMPLES)
 def test_backend_fixture_pair_matches_published_contract(name):
     pair = json.loads((ROOT / "fixtures/backend" / (name + ".json")).read_text(encoding="utf-8"))

@@ -52,6 +52,26 @@
     }
   },
   "additionalProperties": false,
+  "else": {
+    "properties": {
+      "evidence": {
+        "minItems": 1
+      },
+      "path": {
+        "const": "stub"
+      }
+    }
+  },
+  "if": {
+    "properties": {
+      "insufficient_context": {
+        "const": true
+      }
+    },
+    "required": [
+      "insufficient_context"
+    ]
+  },
   "properties": {
     "evidence": {
       "items": {
@@ -134,6 +154,22 @@
     "flag_id",
     "path"
   ],
+  "then": {
+    "properties": {
+      "evidence": {
+        "maxItems": 0
+      },
+      "confidence": {
+        "const": "low"
+      },
+      "recommended_action": {
+        "const": "MANUAL_REVIEW"
+      },
+      "path": {
+        "const": "insufficient_context"
+      }
+    }
+  },
   "title": "BackendAssessResponse",
   "type": "object"
 }
