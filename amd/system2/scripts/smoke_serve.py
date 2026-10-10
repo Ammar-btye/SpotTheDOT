@@ -57,18 +57,41 @@ def schema_for(packet: dict) -> dict:
 
 
 def check(out: dict, packet: dict) -> List[str]:
-    """Problems with a parsed reply; empty list = valid."""
-    errs, ids, keys = [], set(row_ids(packet)), list(schema_for(packet)["properties"])
-    if list(out) != keys:
-        errs.append("keys %r, want %r" % (list(out), keys))
-    for e in out.get("evidence") or []:
-        bad = [i for i in e.get("ids") or [] if i not in ids]
-        if bad:
-            errs.append("cites unknown ids %r" % bad)
-    if out.get("recommended_action") not in packet["allowed_actions"]:
-        errs.append("action %r not allowed" % out.get("recommended_action"))
-    if out.get("confidence") not in CONFIDENCE:
-        errs.append("confidence %r" % out.get("confidence"))
+    """Validate every keyword emitted by schema_for, without external dependencies.
+
+    Generation keeps evidence-first order, but JSON Schema does not constrain
+    object property order. This checker is stronger than the original GPU run's
+    key/enum checks; it does not retrospectively revalidate absent raw replies.
+    """
+    errs = []
+
+    def validate(value, schema, path):
+        kind = schema["type"]
+        expected = {"object": dict, "array": list, "string": str, "boolean": bool}[kind]
+        if not isinstance(value, expected):
+            errs.append("%s must be %s" % (path, kind))
+            return
+        if "enum" in schema and value not in schema["enum"]:
+            errs.append("%s value %r not allowed" % (path, value))
+        if kind == "object":
+            props = schema["properties"]
+            for key in schema["required"]:
+                if key not in value:
+                    errs.append("%s.%s required" % (path, key))
+            for key in value:
+                if key not in props:
+                    errs.append("%s.%s forbidden extra" % (path, key))
+                else:
+                    validate(value[key], props[key], "%s.%s" % (path, key))
+        elif kind == "array":
+            if len(value) < schema.get("minItems", 0):
+                errs.append("%s too few items" % path)
+            if "maxItems" in schema and len(value) > schema["maxItems"]:
+                errs.append("%s too many items" % path)
+            for index, item in enumerate(value):
+                validate(item, schema["items"], "%s[%d]" % (path, index))
+
+    validate(out, schema_for(packet), "reply")
     return errs
 
 
