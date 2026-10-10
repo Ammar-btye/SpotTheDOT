@@ -23,7 +23,7 @@
     }
   },
   "response": {
-    "contract_version": "2026-10-10.1",
+    "contract_version": "2026-10-10.2",
     "flag_id": "flag:mis-M001",
     "explanation": {
       "evidence": [

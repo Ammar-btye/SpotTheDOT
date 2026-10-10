@@ -24,7 +24,7 @@ from typing import Annotated, Dict, List, Literal, Optional, Tuple, Union, get_a
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, WithJsonSchema, model_validator
 
-CONTRACT_VERSION = "2026-10-10.1"
+CONTRACT_VERSION = "2026-10-10.2"
 
 # ── enums ────────────────────────────────────────────────────────────────────
 

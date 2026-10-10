@@ -22,7 +22,7 @@
     }
   },
   "response": {
-    "contract_version": "2026-10-10.1",
+    "contract_version": "2026-10-10.2",
     "flag_id": "flag:act-A9999",
     "explanation": {
       "evidence": [],

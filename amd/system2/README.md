@@ -6,7 +6,7 @@ matters and what to do**: it takes one escalated flag plus a short context packe
 row in the packet.
 
 Plan and evidence: `research/tech-system2-context-distill-2026-10-10.md` (recommendations R1–R7).
-API contract with `web/`: `analyst/contract.py` (contract `2026-10-10.1`) is the source of truth. It supersedes
+API contract with `web/`: `analyst/contract.py` (contract `2026-10-10.2`) is the source of truth. It supersedes
 `docs/ARCHITECTURE.md` §4, which is kept only as history.
 
 ## Build order

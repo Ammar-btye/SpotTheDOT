@@ -102,7 +102,7 @@ def test_health_open_and_keyless(client):
     assert r.status_code == 200
     d = r.json()
     assert set(d) == {"status", "mode", "contract_version", "fixtures"}
-    assert (d["status"], d["mode"], d["contract_version"]) == ("ok", "stub", "2026-10-10.1") and d["fixtures"] >= 1
+    assert (d["status"], d["mode"], d["contract_version"]) == ("ok", "stub", "2026-10-10.2") and d["fixtures"] >= 1
     assert TEST_KEY not in r.text
 
 

@@ -79,7 +79,7 @@
 - `scripts/system2-worker.ts`: polls Neon for escalated flags, builds the context packet, calls AMD `/v1/assess`, and stores the result. It's decoupled so a slow GPU never stalls the live feed.
 
 ## 4. The contract between `web/` and `amd/` (keep it in sync)
-> **Superseded (2026-10-10):** the typed contract in `amd/system2/analyst/contract.py` (contract `2026-10-10.1`)
+> **Superseded (2026-10-10):** the typed contract in `amd/system2/analyst/contract.py` (contract `2026-10-10.2`)
 > replaces the sketch below. JSON Schemas live in `amd/system2/schema/` and request/response examples in
 > `amd/system2/fixtures/`. Key differences:
 > - The request carries only the System 1 flag (`{"flag": {...}}`); System 2 builds the context packet itself.
