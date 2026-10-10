@@ -4,7 +4,10 @@ run_pipeline(request, generator, config) normalizes the packet and short-circuit
 the template without calling the generator. Otherwise it makes at most two generation attempts: the first
 attempt's sanitized errors enter the second call, with the same evidence. Every failure kind — transport,
 deadline, oversized body, truncation (finish_reason 'length'), JSON parse, schema or grounding — counts as
-an attempt. After two failures (or when the deadline leaves no time) the result is template_assessment(),
+an attempt. A model output is accepted only when check_assessment() finds nothing AND it passes the strict
+generation model (generation.GeneratedAssessment: claim/answer lengths, claim and ID counts), so the bounds never
+depend on the server honouring the JSON-schema grammar; a strict-model failure is a 'schema' rejection.
+After two failures (or when the deadline leaves no time) the result is template_assessment(),
 checked by the same checker and labelled path 'fallback' / model 'template' — never LLM success. If no
 template claim passes the checker, the result is an explicit insufficient_context MANUAL_REVIEW.
 
@@ -23,8 +26,10 @@ import re
 import time
 from typing import Callable, Optional, Tuple
 
+from pydantic import ValidationError
+
 from .backend_contract import BackendAssessRequest
-from .grounding import (EntityCatalog, GroundingError, _clip, check_assessment, default_catalog,
+from .grounding import (EntityCatalog, GroundingError, _clip, _err, check_assessment, default_catalog,
                         describe_errors)
 from .packet import PreparedPacket, normalize_packet
 from .template import template_assessment
@@ -151,6 +156,20 @@ def _ordered(candidate: dict) -> dict:
                                       'insufficient_context')}
 
 
+def _strict_errors(candidate, prepared: PreparedPacket) -> Tuple[GroundingError, ...]:
+    """() when the candidate passes the strict generation model; else one 'schema' error naming the first fault."""
+    from .generation import validate_generated  # deferred: generation imports this module
+    try:
+        validate_generated(candidate, prepared)
+    except ValidationError as exc:
+        e = exc.errors()[0]
+        where = '.'.join(str(x) for x in e['loc']) or 'candidate'
+        return (_err('schema', 'candidate', None, '%s: %s' % (where, e['msg'])),)
+    except ValueError as exc:
+        return (_err('schema', 'candidate', None, (str(exc).splitlines() or ['generation model'])[0]),)
+    return ()
+
+
 def _attempt(index, generator, prepared, errors, config, start, catalog) -> Tuple[Attempt, Optional[dict]]:
     clock = config.clock
     t0 = clock()
@@ -184,7 +203,7 @@ def _attempt(index, generator, prepared, errors, config, start, catalog) -> Tupl
         candidate = _parse(text)
     except ValueError as exc:  # json.JSONDecodeError, duplicate keys, NaN/Infinity
         return Attempt(index, 'parse_error', detail=redact(str(exc)), **meta), None
-    found = check_assessment(candidate, prepared, catalog)
+    found = check_assessment(candidate, prepared, catalog) or _strict_errors(candidate, prepared)
     if found:
         return Attempt(index, 'rejected', errors=found, **meta), None
     return Attempt(index, 'accepted', **meta), _ordered(candidate)

@@ -21,7 +21,7 @@ EXAMPLES = ('equipment', 'robot_health', 'navigation', 'data_quality', 'mission'
 from analyst.backend_contract import BACKEND_CONTRACT_VERSION, BackendAssessResponse  # noqa: E402
 from analyst.dataset import load_dataset  # noqa: E402
 from analyst.pipeline import Generation, GenerationError, run_pipeline  # noqa: E402
-from analyst.template import template_assessment  # noqa: E402
+from analyst.prompts import example_output  # noqa: E402
 
 
 def case(case_id):
@@ -46,7 +46,7 @@ def scripted(*outcomes):
 
 
 def ok(packet):
-    return Generation(json.dumps(template_assessment(packet)), 'qwen3.5-9b-q4', 'stop', 900, 180, 35.6)
+    return Generation(json.dumps(example_output(packet)), 'qwen3.5-9b-q4', 'stop', 900, 180, 35.6)
 
 
 def bad(packet):

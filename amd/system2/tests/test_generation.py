@@ -26,7 +26,7 @@ from analyst.dataset import HOLDOUT_MISSIONS, load_dataset  # noqa: E402
 from analyst.grounding import check_assessment  # noqa: E402
 from analyst.packet import normalize_packet  # noqa: E402
 from analyst.pipeline import PipelineConfig, run_pipeline  # noqa: E402
-from analyst.template import template_assessment  # noqa: E402
+from analyst.prompts import example_output as model_reply  # noqa: E402  -- compact reply within generation bounds
 
 
 def gen():
@@ -113,7 +113,7 @@ def test_saved_packet_through_http_generation_and_checked_pipeline(server):
     g, p = gen(), prompts()
     http, url = server
     c = case('kit-equipment')
-    valid = template_assessment(c.prepared)
+    valid = model_reply(c.prepared)
     script(http, reply(valid, completion=180))
     run = run_pipeline(c.request, g.LlamaGenerator(url))
     assert run.path == 'llm' and run.model == 'qwen-fake'
@@ -203,7 +203,7 @@ def test_reordered_valid_json_is_accepted_over_http(server):
     g = gen()
     http, url = server
     c = case('kit-navigation')
-    valid = template_assessment(c.prepared)
+    valid = model_reply(c.prepared)
     script(http, reply(dict(reversed(list(valid.items())))))
     run = run_pipeline(c.request, g.LlamaGenerator(url))
     assert run.path == 'llm' and run.assessment == valid and list(run.assessment) == list(GEN01)
@@ -308,7 +308,7 @@ def test_default_budget_is_350_and_439_token_smoke_is_not_assumed_valid(server):
     g = gen()
     http, url = server
     c = case('kit-equipment')
-    script(http, reply(template_assessment(c.prepared), finish='length', completion=439))
+    script(http, reply(model_reply(c.prepared), finish='length', completion=439))
     run = run_pipeline(c.request, g.LlamaGenerator(url))
     assert all(r['body']['max_tokens'] == 350 for r in http.requests)
     assert run.path == 'fallback' and run.model == 'template'
@@ -319,7 +319,7 @@ def test_length_terminated_parseable_reply_retries_with_errors(server):
     g = gen()
     http, url = server
     c = case('kit-data_quality')
-    valid = template_assessment(c.prepared)
+    valid = model_reply(c.prepared)
     script(http, reply(valid, finish='length', completion=350), reply(valid, completion=200))
     run = run_pipeline(c.request, g.LlamaGenerator(url))
     assert run.path == 'retry' and [a.status for a in run.attempts] == ['truncated', 'accepted']
@@ -334,7 +334,7 @@ def test_completion_count_boundary_is_metadata_not_validity(server, n):
     g = gen()
     http, url = server
     c = case('kit-equipment')
-    valid = template_assessment(c.prepared)
+    valid = model_reply(c.prepared)
     script(http, reply(valid, completion=n))
     run = run_pipeline(c.request, g.LlamaGenerator(url))
     assert run.path == 'llm' and run.completion_tokens == n
@@ -351,7 +351,7 @@ def test_out_of_packet_id_or_action_falls_back(server, mutate):
     g = gen()
     http, url = server
     c = case('kit-equipment')
-    bad = copy.deepcopy(template_assessment(c.prepared))
+    bad = copy.deepcopy(model_reply(c.prepared))
     mutate(bad)
     script(http, reply(bad))
     run = run_pipeline(c.request, g.LlamaGenerator(url))
@@ -449,7 +449,7 @@ def test_metadata_absent_or_invalid_speed_is_null(server):
     g = gen()
     http, url = server
     c = case('kit-equipment')
-    valid = template_assessment(c.prepared)
+    valid = model_reply(c.prepared)
     script(http, reply(valid, speed=None))
     assert run_pipeline(c.request, g.LlamaGenerator(url)).tokens_per_sec is None
     body = envelope(json.dumps(valid))
@@ -465,7 +465,7 @@ def test_api_key_only_in_header_and_url_scheme_checked(server):
     g = gen()
     http, url = server
     c = case('kit-equipment')
-    script(http, reply(template_assessment(c.prepared)))
+    script(http, reply(model_reply(c.prepared)))
     run_pipeline(c.request, g.LlamaGenerator(url, api_key='sekrit-llama-key-123'))
     sent = http.requests[0]
     assert sent['headers'].get('Authorization') == 'Bearer sekrit-llama-key-123'

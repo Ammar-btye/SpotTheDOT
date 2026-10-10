@@ -469,6 +469,27 @@ def test_model_runner_without_url_is_a_usage_error(tmp_path):
     assert r.returncode == 2 and not (tmp_path / 'out').exists()
 
 
+def test_out_of_bounds_model_output_is_not_schema_valid_or_accepted():
+    """Strict generation bounds count in the harness: 6 duplicate claims are a schema failure, never model success."""
+    from analyst import evaluation as ev
+    from analyst.pipeline import Generation
+
+    def bloated(packet, errors=(), timeout_s=None):
+        out = copy.deepcopy(ANSWERS[packet.question])
+        out['evidence'] = out['evidence'][:1] * 6
+        out['answer'] = out['evidence'][0]['claim']
+        return Generation(json.dumps(out), 'qwen-fake', 'stop')
+
+    cases = tuple(c for c in CASES if c.case_id == 'kit-equipment')
+    result = ev.evaluate_cases(cases, [ev.ModelRunner(bloated)], ev.EvalConfig())
+    row = result['records'][0]
+    assert row['first_attempt']['parsed'] and not row['first_attempt']['schema_valid']
+    assert row['path'] == 'fallback' and row['fallback']
+    agg = result['runners']['model']
+    assert agg['first_attempt']['schema_valid'] == rate(0, 1)
+    assert agg['generation']['model_accepted'] == rate(0, 1)
+
+
 def test_evaluate_cases_rejects_runners_that_see_different_packets():
     assert importlib.util.find_spec('analyst.evaluation'), 'analyst/evaluation.py must exist'
     from analyst import evaluation as ev

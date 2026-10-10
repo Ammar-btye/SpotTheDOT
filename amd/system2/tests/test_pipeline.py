@@ -141,6 +141,33 @@ def test_two_failures_return_checked_template_fallback(outcomes, statuses):
     assert check_assessment(run.assessment, prepared) == ()
 
 
+def bloated(req):
+    """Grounded and packet-cited, but over the generation model's bounds (6 claims, 1,000-char answer)."""
+    ok = valid_candidate(req)
+    return dict(ok, evidence=ok['evidence'] * 6, answer=('Visual score was 75. ' * 50).strip())
+
+
+@pytest.mark.parametrize('mutate', [
+    bloated,
+    lambda req: dict(valid_candidate(req), answer='Visual score was 75. ' + 'x' * 300),
+    lambda req: dict(valid_candidate(req), evidence=[{'claim': 'Visual score was 75. ' + 'y' * 200,
+                                                      'ids': ['F2']}]),
+])
+def test_strict_generation_bounds_hold_without_server_grammar(mutate):
+    """A server that ignores response_format must not get over-long or over-many claims accepted as 'llm'."""
+    p, req = api(), equipment()
+    from analyst.grounding import check_assessment
+    prepared = normalize_packet(req)
+    candidate = mutate(req)
+    assert check_assessment(candidate, prepared) == (), 'precondition: the grounding checker alone accepts it'
+    g = FakeGen([gen(candidate), gen(candidate)])
+    run = p.run_pipeline(req, g, cfg())
+    assert run.path == 'fallback' and run.model == 'template'
+    assert [a.status for a in run.attempts] == ['rejected', 'rejected']
+    assert [e.code for e in run.attempts[0].errors] == ['schema']
+    assert g.calls[1]['errors'] and 'schema' in g.calls[1]['errors'][0]
+
+
 def test_insufficient_packet_short_circuits_without_generator_calls():
     p = api()
     case = next(c for c in load_dataset(DATA) if c.category == 'insufficient_context')
