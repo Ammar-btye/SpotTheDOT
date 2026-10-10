@@ -277,6 +277,29 @@ def build_metrics(records: List[dict], context: dict) -> dict:
     }
 
 
+def diff_path(a, b, path: str = '') -> Optional[str]:
+    """First dotted key path where a and b differ (types compared strictly, so True != 1), or None when equal."""
+    here = path or '<root>'
+    if type(a) is not type(b):
+        return here
+    if isinstance(a, dict):
+        for key in sorted(set(a) | set(b)):
+            sub = '%s.%s' % (path, key) if path else str(key)
+            if key not in a or key not in b:
+                return sub
+            found = diff_path(a[key], b[key], sub)
+            if found:
+                return found
+        return None
+    if isinstance(a, list):
+        for i, (x, y) in enumerate(zip(a, b)):
+            found = diff_path(x, y, '%s[%d]' % (path, i))
+            if found:
+                return found
+        return None if len(a) == len(b) else '%s[%d]' % (path, min(len(a), len(b)))
+    return None if a == b else here
+
+
 # ── render ───────────────────────────────────────────────────────────────────────────────────
 
 def _pct(v) -> str:

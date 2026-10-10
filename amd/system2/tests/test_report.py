@@ -6,6 +6,7 @@ involved, so every number asserted here is a regression check of the report code
 """
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -20,7 +21,7 @@ SCRIPT = SYS2 / 'scripts/report.py'
 HELDOUT = SYS2 / 'data/heldout_packets.json'
 DEV = SYS2 / 'data/dev_packets.json'
 
-from analyst.dataset import load_dataset  # noqa: E402
+from analyst.dataset import dataset_manifest, load_dataset, validate_dataset  # noqa: E402
 from analyst.evaluation import aggregate  # noqa: E402
 from analyst.headline import METRICS, SERVED, bootstrap_ci, percentile  # noqa: E402
 from analyst.prompts import example_output, packet_view  # noqa: E402
@@ -310,3 +311,103 @@ def test_model_usage_errors(tmp_path, extra):
     result = report('--runner', 'both', '--out-dir', out, *extra)
     assert result.returncode == 2 and not out.exists()
     assert 'secret' not in result.stderr
+
+
+# ── --rebuild ────────────────────────────────────────────────────────────────────────────────
+
+def _copy(src: Path, dst: Path) -> Path:
+    shutil.copytree(src, dst)
+    return dst
+
+
+def _rewrite_records(path: Path, edit):
+    rows = records(path)
+    rows = edit(rows)
+    (path / 'cases.jsonl').write_text(''.join(json.dumps(r, sort_keys=True) + '\n' for r in rows), encoding='utf-8')
+
+
+@pytest.mark.parametrize('which', ['template_run', 'model_run'])
+def test_rebuild_is_byte_identical(request, which, tmp_path):
+    src = request.getfixturevalue(which)
+    out = tmp_path / 'rebuilt'
+    result = report('--rebuild', src, '--out-dir', out)
+    assert result.returncode == 0, result.stderr
+    assert 'rebuild: identical' in result.stdout
+    for name in ('metrics.json', 'report.md', 'cases.jsonl'):
+        assert (out / name).read_bytes() == (src / name).read_bytes(), name
+
+
+def test_rebuild_in_place_keeps_bytes(template_run, tmp_path):
+    a = _copy(template_run, tmp_path / 'a')
+    before = {n: (a / n).read_bytes() for n in ('metrics.json', 'report.md', 'cases.jsonl')}
+    assert report('--rebuild', a).returncode == 0
+    assert {n: (a / n).read_bytes() for n in before} == before
+
+
+def _flip(rows):
+    r = next(r for r in rows if r['section'] == 'heldout' and r['runner'] == 'template')
+    r['final']['citation_valid'] = not r['final']['citation_valid']
+    return rows
+
+
+def _drop(rows):
+    i = next(i for i, r in enumerate(rows) if r['section'] == 'heldout')
+    return rows[:i] + rows[i + 1:]
+
+
+def _repacket(rows):
+    next(r for r in rows if r['section'] == 'heldout')['packet_hash'] = '0' * 64
+    return rows
+
+
+@pytest.mark.parametrize('tamper, message', [
+    ('flip', 'differs at headline.runners.template'),
+    ('headline', 'differs at headline.runners.template.final_citation_valid.value'),
+    ('drop', 'differs at '),
+    ('packet', 'held-out dataset changed since the run'),
+    ('identity', 'differs at identity.identity_hash'),
+])
+def test_rebuild_refuses_tampering(template_run, tmp_path, tamper, message):
+    a, out = _copy(template_run, tmp_path / 'a'), tmp_path / 'out'
+    if tamper == 'flip':
+        _rewrite_records(a, _flip)
+    elif tamper == 'drop':
+        _rewrite_records(a, _drop)
+    elif tamper == 'packet':
+        _rewrite_records(a, _repacket)
+    else:
+        m = metrics(a)
+        if tamper == 'headline':
+            m['headline']['runners']['template']['final_citation_valid']['value'] = 0.5
+        else:
+            m['identity']['heldout']['code']['revision'] = 'f' * 40
+        (a / 'metrics.json').write_text(json.dumps(m, indent=2), encoding='utf-8')
+    result = report('--rebuild', a, '--out-dir', out)
+    assert result.returncode == 4, (result.stdout, result.stderr)
+    assert message in result.stderr
+    assert not out.exists()
+
+
+def test_rebuild_refuses_changed_heldout_dataset(template_run, tmp_path):
+    raw = json.loads(HELDOUT.read_text(encoding='utf-8'))
+    subset = validate_dataset({'cases': raw['cases'][:-1]}, split='heldout')
+    changed = tmp_path / 'heldout.json'
+    changed.write_text(json.dumps({'cases': [c.to_dict() for c in subset], 'manifest': dataset_manifest(subset)}),
+                       encoding='utf-8')
+    out = tmp_path / 'out'
+    result = report('--rebuild', template_run, '--heldout', changed, '--out-dir', out)
+    assert result.returncode == 4 and 'held-out dataset changed since the run' in result.stderr
+    assert not out.exists()
+
+
+@pytest.mark.parametrize('missing', ['cases.jsonl', 'metrics.json'])
+def test_rebuild_missing_inputs(template_run, tmp_path, missing):
+    a = _copy(template_run, tmp_path / 'a')
+    (a / missing).unlink()
+    result = report('--rebuild', a, '--out-dir', tmp_path / 'out')
+    assert result.returncode == 1 and not (tmp_path / 'out').exists()
+
+
+def test_rebuild_never_runs_a_model(template_run, tmp_path):
+    result = report('--rebuild', template_run, '--runner', 'both', '--model-url', 'http://127.0.0.1:9', '--label', 'x')
+    assert result.returncode == 2

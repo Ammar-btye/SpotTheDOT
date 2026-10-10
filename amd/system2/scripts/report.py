@@ -5,14 +5,20 @@ From amd/system2 (the template runner needs no GPU or network):
     uv run --no-project --with-requirements requirements.txt python scripts/report.py --runner template
     python scripts/report.py --runner both --model-url http://127.0.0.1:8080 --model qwen3.5-9b-q4km \
         --label amd-gfx1151-rocm-qwen35-9b-q4km --out-dir results/report/qwen35-9b
-    python scripts/report.py --rebuild results/report/qwen35-9b
+    python scripts/report.py --rebuild results/report/qwen35-9b          # offline re-verification, no model
 
 Runs the same runner objects over the approved held-out packets (data/heldout_packets.json, the headline) and the
 training-pool dev packets (data/dev_packets.json, a separate section that is never headline). Writes
 <out-dir>/cases.jsonl (one record per section x runner x flag), report.md and metrics.json (written last; its presence
 means the run completed). Exit 0 = report written; 1 = a dataset was rejected (unreadable, tampered, or not the
 expected split) before any model call or output write; 2 = usage error; 3 = the run failed after the datasets were
-accepted (class name printed, no capture content, nothing written).
+accepted (class name printed, no capture content, nothing written); 4 = --rebuild found a difference.
+
+--rebuild DIR recomputes every derived number from DIR/cases.jsonl and the checked-in held-out (and dev) dataset:
+the dataset content hash and every record's request/packet hash must match, then the recomputed metrics must equal
+DIR/metrics.json exactly. It then rewrites byte-identical report.md and metrics.json to --out-dir (default DIR) and
+prints 'rebuild: identical'; otherwise it prints the first differing key path and exits 4 without writing. Peak
+memory, timestamps, host and command cannot be recomputed, so they are carried over from DIR/metrics.json.
 
 A model run (--runner both) needs --label naming where it ran and records a speed block: p50/p95 latency, decode
 tokens/s, token counts and peak amdgpu VRAM+GTT from sysfs (--mem-source none to disable), attributed to the label,
@@ -32,9 +38,10 @@ import urllib.parse
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from analyst.dataset import content_hash  # noqa: E402
 from analyst.evaluation import (DEFAULT_SEED, EvalConfig, ModelRunner, TemplateRunner, endpoint,  # noqa: E402
-                                is_loopback, load_eval_dataset, publish_files, run_evaluation)
+                                is_loopback, load_eval_dataset, packet_hash, publish_files, request_hash,
+                                run_evaluation)
 from analyst.generation import MAX_TOKENS, LlamaGenerator  # noqa: E402
-from analyst.headline import CI_RESAMPLES, CI_SEED, build_metrics, heldout_scope, render  # noqa: E402
+from analyst.headline import CI_RESAMPLES, CI_SEED, build_metrics, diff_path, heldout_scope, render  # noqa: E402
 from analyst.memory import DRM_ROOT, MemorySampler  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -79,7 +86,8 @@ def parser():
     p.add_argument('--max-tokens', type=int, default=MAX_TOKENS)
     p.add_argument('--ci-resamples', type=int, default=CI_RESAMPLES)
     p.add_argument('--ci-seed', type=int, default=CI_SEED)
-    p.add_argument('--out-dir', type=Path, help='default results/report/<runner>')
+    p.add_argument('--out-dir', type=Path, help='default results/report/<runner> (or the --rebuild DIR)')
+    p.add_argument('--rebuild', type=Path, metavar='DIR', help='recompute and verify a finished report offline')
     p.add_argument('--quiet', action='store_true')
     return p
 
@@ -156,6 +164,78 @@ def run(args, argv) -> int:
     return 0
 
 
+def _reject_constant(name):
+    raise ValueError('non-finite JSON constant')
+
+
+def _changed(what: str) -> int:
+    print('rebuild: %s dataset changed since the run; nothing written.' % what, file=sys.stderr)
+    return 4
+
+
+def _matches(dataset, stored_identity, rows) -> bool:
+    """Same content hash, and every record's request/packet hash equals the checked-in case it names."""
+    if dataset.manifest['content_hash'] != stored_identity['dataset']['content_hash']:
+        return False
+    cases = {c.case_id: c for c in dataset.cases}
+    for r in rows:
+        c = cases.get(r['case_id'])
+        if c is None or r['request_hash'] != request_hash(c) or r['packet_hash'] != packet_hash(c.prepared):
+            return False
+    return True
+
+
+def rebuild(args) -> int:
+    src = args.rebuild
+    try:
+        stored = json.loads((src / 'metrics.json').read_text(encoding='utf-8'), parse_constant=_reject_constant)
+        cases_bytes = (src / 'cases.jsonl').read_bytes()
+        records = [json.loads(line, parse_constant=_reject_constant)
+                   for line in cases_bytes.decode('utf-8').splitlines() if line.strip()]
+        identity = stored['identity']
+        heldout = _load(args.heldout, 'heldout')
+        dev = _load(args.dev, 'train') if identity.get('development') else None
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+        print('rebuild: missing or unreadable report directory or dataset; nothing written.', file=sys.stderr)
+        return 1
+    try:
+        held_rows = [r for r in records if r['section'] == 'heldout']
+        dev_rows = [r for r in records if r['section'] == 'development']
+        if not _matches(heldout, identity['heldout'], held_rows):
+            return _changed('held-out')
+        if dev is not None and not _matches(dev, identity['development'], dev_rows):
+            return _changed('development')
+        selected = identity['heldout']['dataset']['selected_case_ids']
+        recorded = {k: v for k, v in identity.items() if k != 'identity_hash'}
+        context = {
+            'ci': {'resamples': stored['ci']['resamples'], 'seed': stored['ci']['seed']},
+            'identity': dict(recorded, identity_hash=content_hash(recorded)),
+            'heldout_scope': heldout_scope(set(selected) == {c.case_id for c in heldout.cases}),
+            'measurement': stored['measurement'], 'command': stored['command'],
+            'memory': stored['speed'].get('peak_memory'),
+        }
+        recomputed = json.loads(dump(build_metrics(records, context)))
+    except (KeyError, TypeError, ValueError, IndexError, ZeroDivisionError):
+        print('rebuild: cases.jsonl or metrics.json is malformed; nothing written.', file=sys.stderr)
+        return 4
+    where = diff_path(recomputed, stored)
+    if where is None:
+        for name in identity['heldout']['runners']:
+            if [r['case_id'] for r in held_rows if r['runner'] == name] != selected:
+                where = 'identity.heldout.dataset.selected_case_ids (runner %s)' % name
+                break
+    if where is not None:
+        print('rebuild: differs at %s; nothing written.' % where, file=sys.stderr)
+        return 4
+    out_dir = args.out_dir or src
+    payloads = [('report.md', render(recomputed).encode('utf-8')), ('metrics.json', dump(recomputed))]
+    if out_dir.resolve() != src.resolve():
+        payloads.insert(0, ('cases.jsonl', cases_bytes))
+    publish_files(out_dir, payloads)
+    print('rebuild: identical | %d held-out flags | %s' % (recomputed['scope']['n_flags'], out_dir / 'metrics.json'))
+    return 0
+
+
 def dump(metrics: dict) -> bytes:
     return (json.dumps(metrics, ensure_ascii=False, indent=2, allow_nan=False) + '\n').encode('utf-8')
 
@@ -164,6 +244,11 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     p = parser()
     args = p.parse_args(argv)
+    if args.rebuild is not None:
+        if args.runner != 'template' or args.model_url or args.model or args.label or args.limit is not None \
+                or args.mem_source:
+            p.error('--rebuild takes only --heldout, --dev and --out-dir (it never runs a model)')
+        return rebuild(args)
     if args.runner == 'both':
         if not args.model_url:
             p.error('--model-url is required for --runner both')
