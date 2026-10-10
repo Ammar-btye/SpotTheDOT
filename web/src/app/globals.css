@@ -1,0 +1,404 @@
+@import "tailwindcss";
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   SPOTlight theme tokens — a Grafana-style operator console.
+
+   Everything visual goes through a semantic token. Components never name a
+   colour; they name a role (surface, line, muted, bad). That is the only
+   reason two themes are maintainable: light mode is a different value table,
+   not a second set of components.
+
+   Three theme states, matching how operators actually set this:
+     - no [data-theme]  → follow the OS (the default)
+     - [data-theme=light] / [data-theme=dark] → explicit choice, wins over OS
+
+   So every token is defined three times: once on bare :root (light), once
+   under prefers-color-scheme guarded against an explicit light choice, and
+   once under [data-theme=dark] so the toggle beats the OS in both directions.
+   A colour defined ONLY inside a media query has no value in the third state.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* LIGHT — the default, and the base every other state overrides. */
+:root {
+  --c-canvas: #f4f5f5;       /* page behind the panels */
+  --c-chrome: #ffffff;       /* sidebar + top bar */
+  --c-surface: #ffffff;      /* panel body */
+  --c-surface-2: #eef0f2;    /* hover, nested rows */
+  --c-surface-3: #f7f8f9;    /* inset wells: search field, code */
+
+  --c-line: #dcdfe3;
+  --c-line-strong: #81878f;   /* control boundaries — 3.6:1 on chrome */
+
+  --c-ink: #1b1f26;          /* 16.4:1 on surface */
+  --c-muted: #585f69;        /*  6.5:1 on surface — a real AA secondary */
+  --c-faint: #626c75;        /* 5.2:1 — de-emphasised, but still real text */
+
+  /* Amber is the single action colour. Two variants, because a colour that
+     works as a button fill rarely passes AA as text on white. */
+  --c-accent: #f59f0b;
+  --c-accent-hover: #d98806;
+  --c-on-accent: #140d00;    /* 9.1:1 on the fill */
+  --c-accent-ink: #8f5700;   /* 6.0:1 on surface — amber *as text* */
+
+  /* Status. Light mode needs the 700-level; the 400s used in dark mode are
+     invisible on white. */
+  --c-ok: #136c33;
+  --c-warn: #8a5406;
+  --c-bad: #c02020;
+  --c-info: #1d4ed8;
+
+  --c-focus: #1d4ed8;
+  --c-shadow: 0 1px 2px rgb(24 26 30 / 0.09);
+  --c-hero-from: #2b4bb8;
+  --c-hero-via: #6b3fa8;
+  --c-hero-to: #c25a16;
+  --c-hero-scrim: 0.3;
+
+  /* Motion. One curve and three durations for the whole app so timings can't
+     drift apart. The curve decelerates hard — things arrive and settle rather
+     than coasting, which is what makes an entrance read as deliberate instead
+     of slow. Not theme-dependent, so it is declared once here. */
+  /* Not --ease-out: Tailwind's theme already defines that, and a same-named
+     token on :root silently repoints every `ease-out` utility in the app. */
+  --ease-settle: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-fast: 150ms;
+  --dur-base: 450ms;
+}
+
+/* DARK via the OS — skipped when the user has explicitly chosen light. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --c-canvas: #111217;
+    --c-chrome: #111217;
+    --c-surface: #181b1f;
+    --c-surface-2: #23262c;
+    --c-surface-3: #0c0d10;
+
+    --c-line: #2c2f36;
+    --c-line-strong: #636a77;
+
+    --c-ink: #dfe1e5;
+    --c-muted: #9ba1aa;
+    --c-faint: #868d97;
+
+    --c-accent: #ffb224;
+    --c-accent-hover: #ffc24d;
+    --c-on-accent: #140d00;
+    --c-accent-ink: #ffb224;
+
+    --c-ok: #4ade80;
+    --c-warn: #fbbf24;
+    --c-bad: #f87171;
+    --c-info: #60a5fa;
+
+    --c-focus: #60a5fa;
+    --c-shadow: 0 1px 2px rgb(0 0 0 / 0.45);
+    --c-hero-from: #3b5bd9;
+    --c-hero-via: #8b4fd4;
+    --c-hero-to: #e8761f;
+  }
+}
+
+/* DARK chosen explicitly — must repeat the table so the toggle wins over an
+   OS set to light. */
+:root[data-theme="dark"] {
+  --c-canvas: #111217;
+  --c-chrome: #111217;
+  --c-surface: #181b1f;
+  --c-surface-2: #23262c;
+  --c-surface-3: #0c0d10;
+
+  --c-line: #2c2f36;
+  --c-line-strong: #636a77;
+
+  --c-ink: #dfe1e5;
+  --c-muted: #9ba1aa;
+  --c-faint: #868d97;
+
+  --c-accent: #ffb224;
+  --c-accent-hover: #ffc24d;
+  --c-on-accent: #140d00;
+  --c-accent-ink: #ffb224;
+
+  --c-ok: #4ade80;
+  --c-warn: #fbbf24;
+  --c-bad: #f87171;
+  --c-info: #60a5fa;
+
+  --c-focus: #60a5fa;
+  --c-shadow: 0 1px 2px rgb(0 0 0 / 0.45);
+  --c-hero-from: #3b5bd9;
+  --c-hero-via: #8b4fd4;
+  --c-hero-to: #e8761f;
+}
+
+/* ── Hero gradient presets ──────────────────────────────────────────────────
+   Set by [data-hero] on <html>; with no attribute the banner follows the
+   theme-aware default above.
+
+   The scrim is per-preset and not a style choice. White body text needs
+   4.5:1 against the lightest stop of whichever ramp is showing, and these
+   ramps differ by nearly a stop of luminance — Noon's gold needs 42% to clear
+   it where Midnight's indigo clears at 24%. Pinning one scrim across all of
+   them would mean either illegible text on the bright ramps or a Midnight so
+   muddy it stops being a gradient. Each value below is the solved minimum
+   plus a few points of margin; re-solve if a stop is ever re-tuned.
+
+   Named presets are deliberately theme-independent: "Dusk" should look like
+   dusk whether the console is in light or dark. Only the default follows the
+   theme. */
+:root[data-hero="dawn"] {
+  --c-hero-from: #3a2a7a;
+  --c-hero-via: #c0417a;
+  --c-hero-to: #e8923a;
+  --c-hero-scrim: 0.38;
+}
+
+:root[data-hero="noon"] {
+  --c-hero-from: #1565c0;
+  --c-hero-via: #2a9fd6;
+  --c-hero-to: #d9a520;
+  --c-hero-scrim: 0.42;
+}
+
+:root[data-hero="dusk"] {
+  --c-hero-from: #3b5bd9;
+  --c-hero-via: #8b4fd4;
+  --c-hero-to: #e8761f;
+  --c-hero-scrim: 0.32;
+}
+
+:root[data-hero="midnight"] {
+  --c-hero-from: #0f1b3d;
+  --c-hero-via: #26306e;
+  --c-hero-to: #4a4a8f;
+  --c-hero-scrim: 0.24;
+}
+
+/* `inline` matters: it makes each utility emit var(--c-*) rather than baking
+   the light value in, which is what lets one stylesheet serve both themes. */
+@theme inline {
+  --color-canvas: var(--c-canvas);
+  --color-chrome: var(--c-chrome);
+  --color-surface: var(--c-surface);
+  --color-surface-2: var(--c-surface-2);
+  --color-surface-3: var(--c-surface-3);
+
+  --color-line: var(--c-line);
+  --color-line-strong: var(--c-line-strong);
+
+  --color-ink: var(--c-ink);
+  --color-muted: var(--c-muted);
+  --color-faint: var(--c-faint);
+
+  --color-accent: var(--c-accent);
+  --color-accent-hover: var(--c-accent-hover);
+  --color-on-accent: var(--c-on-accent);
+  --color-accent-ink: var(--c-accent-ink);
+
+  --color-ok: var(--c-ok);
+  --color-warn: var(--c-warn);
+  --color-bad: var(--c-bad);
+  --color-info: var(--c-info);
+
+  --color-focus: var(--c-focus);
+
+  /* Grafana-tight corners. A dashboard reads as denser at 4px than at 8px. */
+  --radius-panel: 4px;
+
+  --font-sans: var(--font-fira-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-fira-code), ui-monospace, "SF Mono", monospace;
+}
+
+/* Tailwind's stock `dark:` only reads prefers-color-scheme, which would ignore
+   the toggle. Redefine it to mean "whatever state is actually dark". Used
+   sparingly — tokens cover almost everything. */
+@custom-variant dark {
+  @media (prefers-color-scheme: dark) {
+    &:where(:root:not([data-theme="light"]), :root:not([data-theme="light"]) *) {
+      @slot;
+    }
+  }
+  &:where(:root[data-theme="dark"], :root[data-theme="dark"] *) {
+    @slot;
+  }
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--c-canvas);
+  color: var(--c-ink);
+  font-family: var(--font-sans);
+}
+
+/* Every number in a dashboard should be tabular so digits don't jitter when
+   values update. */
+.nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Panel shadow, so the token stays in one place. */
+.panel-shadow {
+  box-shadow: var(--c-shadow);
+}
+
+/* ── Hero gradient ──────────────────────────────────────────────────────────
+   The banner's background lives here rather than in an inline style on the
+   component, and that placement is the point.
+
+   CSS drops a whole declaration if any one var() in it is undefined — not
+   just the offending component. Composed across two files, that meant a hot
+   reload picking up the JSX before the stylesheet left --c-hero-scrim briefly
+   undefined, which took out the entire background-image and rendered the
+   banner fully transparent. Declaration and tokens in one file cannot
+   desync. The scrim keeps a fallback anyway: it feeds an alpha channel, so
+   it is the one value whose absence is silent rather than obvious. */
+.hero-gradient {
+  background-image:
+    linear-gradient(
+      rgb(0 0 0 / var(--c-hero-scrim, 0.3)),
+      rgb(0 0 0 / var(--c-hero-scrim, 0.3))
+    ),
+    linear-gradient(
+      110deg,
+      var(--c-hero-from),
+      var(--c-hero-via) 52%,
+      var(--c-hero-to)
+    );
+}
+
+/* The preset swatch shows the live ramp, unscrimmed, from the same tokens. */
+.hero-swatch {
+  background-image: linear-gradient(
+    110deg,
+    var(--c-hero-from),
+    var(--c-hero-via) 52%,
+    var(--c-hero-to)
+  );
+}
+
+/* ── Motion utilities ───────────────────────────────────────────────────────
+   Plain classes rather than Tailwind @theme --animate-* entries, matching the
+   .nums / .panel-shadow pattern already in this file and keeping the keyframes
+   somewhere the minifier can't surprise us.
+
+   `both` fill mode matters: it holds the from-state during the delay, which is
+   what lets a stagger work at all — and it's why the reduced-motion block
+   below has to zero animation-delay, not just duration. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(var(--rise, 12px));
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Distance is a variable so one keyframe serves both the card arriving and the
+   smaller settle of the text inside it. */
+.anim-rise {
+  animation: rise var(--dur-base) var(--ease-settle) both;
+}
+
+/* Panels arriving. The slight scale is what separates "floats into place"
+   from "slides up" — the card reads as settling onto the page rather than
+   being pushed onto it. Scale stays above 0.98 so text inside never looks
+   blurred mid-flight. */
+@keyframes float-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.anim-float {
+  animation: float-in var(--dur-base) var(--ease-settle) both;
+}
+
+/* Typewriter. One character per span, each snapped on with a ~1ms duration
+   and a staggered delay — the stagger is the effect, the duration is not.
+
+   Why not the usual `width` + `steps()` trick: it needs overflow:hidden on a
+   single line, and the heading wraps at narrow widths, which turns that
+   version into two lines sliding sideways. Per-character spans wrap normally,
+   and because every character occupies its final box from the first frame,
+   nothing reflows as the line fills in. */
+@keyframes type {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.anim-type {
+  animation: type 1ms linear both;
+}
+
+/* The caret appears as the last character lands, blinks twice, and is gone —
+   `both` holds the final keyframe, so it ends hidden rather than pulsing
+   forever on a settled page. */
+@keyframes caret {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.anim-caret {
+  display: inline-block;
+  width: 0.08em;
+  height: 0.95em;
+  margin-left: 0.06em;
+  vertical-align: -0.08em;
+  background: currentColor;
+  animation: caret 600ms linear 2 both;
+}
+
+/* One visible focus style everywhere, so keyboard users are never lost. */
+:focus-visible {
+  outline: 2px solid var(--c-focus);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Reduced motion. Zeroing duration alone is not enough, and each extra line
+   here fixes a way the page would otherwise still move:
+
+   - animation-delay: `both` fill mode holds an element at opacity 0 through
+     its delay. Kill the duration but keep a 220ms delay and a staggered item
+     stays invisible for 220ms, then pops — worse than no animation.
+   - iteration-count: an `infinite` animation at 0.01ms is not stopped, it is
+     run tens of thousands of times a second. Nothing loops here today, so
+     this line is a guard for the first thing that does.
+   - scroll-behavior: smooth scrolling is motion the duration overrides never
+     touch, because it isn't an animation or a transition. */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto !important;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+  }
+}
