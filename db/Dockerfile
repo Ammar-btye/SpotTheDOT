@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1
-# One-shot db job: migrate / seed / ingest / status / smoke against DATABASE_URL (Neon or local).
+# One-shot db job: migrate / seed / ingest / graph / status / smoke against DATABASE_URL (Neon or local).
 # CPU-only and torch-free: ingestion calls the embedding service over HTTP (EMBED_URL).
 # Build context is the REPO ROOT (db/Dockerfile.dockerignore limits what is sent):
 #
 #   docker build -f db/Dockerfile -t spot-db .
 #   docker run --rm -e DATABASE_URL=... -e EMBED_URL=http://host.docker.internal:8081 spot-db all
-#   docker run --rm -e DATABASE_URL=... spot-db migrate      # or: seed | ingest | status | smoke | reset --yes
+#   docker run --rm -e DATABASE_URL=... spot-db migrate      # or: seed | ingest | graph | status | smoke | reset --yes
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1 \

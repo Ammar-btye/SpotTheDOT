@@ -35,6 +35,10 @@ class Settings:
     statement_timeout_ms: int
     pool_max: int
     log_calls: bool
+    # Graph RAG (contract §7)
+    graph_token_budget: int = 300            # the packet's `graph` section
+    graph_min_similarity: Optional[float] = None   # vector entry nodes; None -> min_similarity
+    graph_text_min_score: float = 0.5        # name/id entry nodes (exact = 1.0; junk trigram hits ~0.3)
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -54,4 +58,7 @@ class Settings:
             statement_timeout_ms=int(_env("MCP_STATEMENT_TIMEOUT_MS", "5000") or 5000),
             pool_max=int(_env("MCP_POOL_MAX", "4") or 4),
             log_calls=(_env("MCP_LOG_CALLS", "1") or "1") not in ("0", "false", "no"),
+            graph_token_budget=int(_env("MCP_GRAPH_TOKEN_BUDGET", "300") or 300),
+            graph_min_similarity=float(g) if (g := _env("MCP_GRAPH_MIN_SIMILARITY")) else None,
+            graph_text_min_score=float(_env("MCP_GRAPH_TEXT_MIN_SCORE", "0.5") or 0.5),
         )

@@ -28,8 +28,10 @@ log = logging.getLogger("spot_mcp")
 
 INSTRUCTIONS = """Read-only context for explaining SPOT robot inspection flags to plant operators.
 Start with get_flag_context(flag_id): it returns one packet with the flag, the event, derived facts (F1..),
-similar incidents, manual passages and policy rules, the allowed actions, and the question. Usually that is enough.
-Only call another tool when the packet's `gaps` say something is missing. Cite the `id` of every item you use.
+knowledge-graph facts, similar incidents, manual passages and policy rules, the allowed actions, and the question.
+Usually that is enough. Only call another tool when the packet's `gaps` say something is missing; graph_neighborhood
+and search_graph walk the knowledge graph (assets, waypoints, failure types, manual topics, failure statistics).
+Cite the `id` of every item you use.
 Never invent ids or numbers. If a search says no_relevant_results, don't cite it. If insufficient_context is true,
 say what is missing instead of guessing. recommended_action must be one of allowed_actions."""
 
@@ -43,6 +45,10 @@ ActionType = Literal["ACOUSTIC_INSPECTION", "GAUGE_READING", "NAVIGATION", "THER
 Category = Literal["equipment", "data_quality", "navigation", "robot_health", "mission", "none", "all"]
 Band = Literal["<=25", "26-40", "41-60", "61-80", "81+"]
 GroupBy = Literal["action_type", "location_id", "configuration_version", "battery_band"]
+Hops = Annotated[int, Field(ge=1, le=3, description="How many edges to walk out from the entry node(s) (1-3)")]
+Entity = Annotated[str, Field(min_length=1, max_length=120, description=(
+    "A node_id ('asset:HX-204', 'location:WP09', 'failure_type:LOCALIZATION_FAILURE', 'topic:docking') "
+    "or a name/id ('HX-204', 'WP09', 'Turbine Hall South')"))]
 
 
 def _request_id(ctx: Optional[Context]) -> Optional[str]:
@@ -89,6 +95,7 @@ def build_server(service: ContextService) -> MCPServer:
         Contains, in order: the flag and the rules that fired; the event (action with reading, safe band,
         anomaly, asset, waypoint, and the validator's priority/category) or the mission; System 1 (Laya)
         predictions; derived facts F1..Fn (battery risk, waypoint reliability, asset history, mission health);
+        graph facts (triples like "LOCALIZATION_FAILURE —common_at→ Turbine Hall South (WP09) (n=6, rate 50%)");
         similar past incidents, asset history, Spot manual passages and policy rules (each with a similarity);
         allowed_actions and suggested_action; citation_ids; insufficient_context + missing; gaps; the question last.
         Cite items by their `id`. If insufficient_context is true, explain what is missing instead of guessing."""
@@ -150,6 +157,31 @@ def build_server(service: ContextService) -> MCPServer:
         rid = _request_id(ctx)
         return await run("search_policy", {"query": query, "k": k},
                          lambda: service.search_policy(query, k, request_id=rid), ctx)
+
+    # ── Graph RAG ───────────────────────────────────────────────────────────────────────────────
+    @mcp.tool(annotations=RO)
+    async def graph_neighborhood(entity: Entity, ctx: Context, hops: Hops = 2,
+                                 k: Annotated[int, Field(ge=1, le=30, description="Max facts (1-30)")] = 20
+                                 ) -> CallToolResult:
+        """Knowledge-graph facts around ONE thing: an asset, waypoint, environment, action type, failure or
+        anomaly type, policy rule, manual topic or manual page. Each fact is a triple such as
+        "Turbine Hall South (WP09) —has_environment→ HIGH_NOISE" or
+        "NAVIGATION —fails_more_in→ HIGH_NOISE (n=20, success 45%)", with an `id` to cite.
+        Statistics and manual links come first. `entity` is a node_id or a name/id; names are matched by text,
+        then by meaning. `resolved_by` says how, and `alternatives` lists other candidates."""
+        rid = _request_id(ctx)
+        return await run("graph_neighborhood", {"entity": entity, "hops": hops, "k": k},
+                         lambda: service.graph_neighborhood(entity, hops, k, request_id=rid), ctx)
+
+    @mcp.tool(annotations=RO)
+    async def search_graph(query: Query, ctx: Context, k: K = 5, hops: Hops = 1) -> CallToolResult:
+        """Find knowledge-graph nodes for a question (by name/id and by meaning), then their facts within `hops`
+        edges. Use for questions that connect things: "which waypoints have localization failures?", "what does
+        the manual say about docking at low battery?". Returns entry_nodes (with node_id for graph_neighborhood)
+        and facts (triples with an `id` to cite)."""
+        rid = _request_id(ctx)
+        return await run("search_graph", {"query": query, "k": k, "hops": hops},
+                         lambda: service.search_graph(query, k, hops, request_id=rid), ctx)
 
     # ── SQL tools ───────────────────────────────────────────────────────────────────────────────
     @mcp.tool(annotations=RO)
