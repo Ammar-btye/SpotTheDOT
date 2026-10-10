@@ -61,14 +61,34 @@ pip install -r requirements.txt
 python -c "import torch; print(torch.__version__)"   # re-check: still +rocm?
 
 export TORCH_COMPILE_DISABLE=1          # eager mode (the scripts also set this)
+python -c "import torch; print(torch.__version__)"   # peft must not have replaced the +rocm torch
+mkdir -p checkpoints
 # 3) smoke test first (~minutes): 1 epoch on a slice
 python scripts/finetune.py --out checkpoints/smoke --epochs 1 --train-limit 300 --bench-limit 150 --calib-limit 100
-# 4) the real run: benchmark after every epoch
-python scripts/finetune.py --out checkpoints/run1 2>&1 | tee checkpoints/run1.log
+# 4) a time-boxed full fine-tune (the benchmark runs after every epoch)
+nohup python scripts/finetune.py --out checkpoints/run3_full --epochs 6 --max-minutes 45 \
+  --oversample will_fail=2,anomaly_expected=2 --patience 2 --bench-limit 600 --select-metric real \
+  > checkpoints/run3_full.log 2>&1 &
+# 5) the LoRA comparison (higher LR is normal for adapters)
+nohup python scripts/finetune.py --out checkpoints/run3_lora --lora --encoder-lr 2e-4 --epochs 6 --max-minutes 45 \
+  --oversample will_fail=2,anomaly_expected=2 --patience 2 --bench-limit 600 --select-metric real \
+  > checkpoints/run3_lora.log 2>&1 &
 ```
-If ROCm training produces NaN losses, add `--no-amp`. If the GPU resets mid-run, set `TORCH_BLAS_PREFER_HIPBLASLT=0`
+Run 4 and 5 one after the other, not at the same time (they'd share the GPU). If ROCm training produces NaN losses, add `--no-amp`. If the GPU resets mid-run, set `TORCH_BLAS_PREFER_HIPBLASLT=0`
 (slower). Watch the GPU with `amd-smi monitor --watch 1`. Upload the best model when you're happy:
 `python scripts/finetune.py ... --push-to-hub <user>/laya-spot-triage` (needs `hf auth login`).
+
+## Demo UI (`demo/`)
+A minimal FastAPI backend and a one-page frontend that stream SPOT events through Laya and mark each answer
+✓/✗ against its expected label.
+```bash
+pip install -r demo/requirements.txt
+python demo/server.py --model checkpoints/run1/best     # or LAYA_MODEL=...; default is untuned base Laya
+open http://127.0.0.1:8000
+```
+1. **Mock feed:** simulated missions from `demo/mock_feed.py` (also runnable alone; prints events as NDJSON).
+2. **Challenge-kit CSVs:** upload any of the kit CSVs (the rest come from `data/kit/`) and pick held-out missions,
+   all missions or one. Only held-out missions are an honest test.
 
 ## Outputs
 - `results/baseline_laya/`: untuned Laya on the benchmark (`report.md` is the readable summary).
@@ -76,13 +96,30 @@ If ROCm training produces NaN losses, add `--no-amp`. If the GPU resets mid-run,
 - `checkpoints/<run>/training_report.md`: every metric across epochs.
 - `checkpoints/<run>/best/` and `final/`: load with `laya.load(path)` plus the questions in `questions.json`.
 
-## Defaults and why (`research/tech-laya-rocm-finetune-2026-10-10.md`, `tech-smalldata-finetune-eval-2026-10-10.md`)
-- `--loss soft-ce`: Laya's own #741 measured no gain from the RL term at this scale. `--loss rlcd` is available.
-- 12,702 training items; 6 epochs × micro-batch 8 × grad-accum 4 = 2,382 optimizer updates. That's well above the ~350 minimum; small runs can
-  collapse to the class prior (laya #963), and the script warns if it sees that.
-- Option order is shuffled each epoch so the model can't learn a position prior.
-- Temperatures are refit after every epoch on held-out calibration missions, not a random item split.
-- The best epoch is selected on the validation set, so its score is slightly optimistic. `final/` is reported too.
+## Training strategies (`triage/trainer.py`, flags on `scripts/finetune.py`)
+Training uses Laya's own batches and losses (`laya==0.4.1`) inside our loop, so checkpoints still load with
+`laya.load`. Every flag is listed by `python scripts/finetune.py --help`.
+
+| Strategy | Flag (default) | Why |
+|---|---|---|
+| LR warmup, then cosine decay to a floor | `--warmup-ratio 0.06 --schedule cosine --min-lr-ratio 0.05` | no full-LR shock to the encoder at step 1; smooth landing instead of overshooting |
+| Layer-wise LR decay | `--llrd 0.95` | top encoder layer at `--encoder-lr`, each lower layer ×0.95: adapt the task layers, protect pretrained features |
+| No weight decay on norms/biases | always on | standard for transformer fine-tuning |
+| **LoRA (Hugging Face PEFT)** | `--lora --lora-r 16 --lora-alpha 32` | adapters on Wqkv/Wo/Wi (7.9% of params), head trains fully; merged at save time and also saved as `lora_adapter/` for the Hub |
+| Class rebalancing | `--oversample will_fail=2,anomaly_expected=2` | rare "yes" answers (~20%) were collapsing to "no" (will-fail recall 0% in early runs) |
+| Early stopping | `--patience 2` | stop after N evals without improvement on `--select-metric` |
+| Time budget | `--max-minutes 45` | measures its own speed, fits the epoch count and LR horizon to the budget, re-plans after every epoch |
+| Continue from a checkpoint | `--base checkpoints/run2/best` | resume from a previous best at a lower LR |
+| fp32 | `--no-amp` | for NaN losses or GEMM errors (now covers the benchmark too) |
+
+Not used: **QLoRA**. It exists to fit multi-billion-parameter models in small memory. Laya is 421M and
+full-fine-tunes comfortably, so 4-bit quantization would only cost accuracy and add bitsandbytes ROCm risk.
+
+Temperatures are refit after every epoch on the held-out calibration missions (now through the fp16 harness,
+~3× faster than `laya.train.calibration_records`). The best epoch is selected on the validation set, so its
+score is slightly optimistic; `final/` and `compare_runs.py`'s "last" column are reported too.
+
+Compare runs: `python scripts/compare_runs.py checkpoints/run2 checkpoints/run3_full checkpoints/run3_lora`.
 
 ## Honest limits
 - 27 real missions. Real-segment CIs (mission-level bootstrap) are wide; read them.
