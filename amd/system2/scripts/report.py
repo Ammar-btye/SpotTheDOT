@@ -26,6 +26,7 @@ the credential-free endpoint, the host and the GPU PCI vendor/device. There is n
 enters argv or the artifacts. Only an amd-* labelled run on the gfx1151 box is an AMD measurement.
 """
 import argparse
+import os
 import dataclasses
 from datetime import datetime, timezone
 import json
@@ -118,7 +119,8 @@ def run(args, argv) -> int:
         runners = [TemplateRunner()]
         if wants_model:
             runners.append(ModelRunner(LlamaGenerator(args.model_url, model=args.model, max_tokens=args.max_tokens,
-                                                      timeout_s=args.timeout_s)))
+                                                      timeout_s=args.timeout_s,
+                                                      api_key=os.environ.get('SYSTEM2_LLAMA_API_KEY') or None)))
         stage = 'evaluation run'
         started = utc_now()
         if sampler is not None:

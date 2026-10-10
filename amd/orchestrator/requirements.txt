@@ -1,0 +1,10 @@
+# SPOT orchestrator (amd/orchestrator), Python >= 3.12. CPU-only, no torch: every model is behind HTTP
+# (LiteLLM gateway, System 2, vision). MCP is spoken with httpx directly (orchestrator/clients.py), like the backend.
+langgraph==1.2.14            # StateGraph for the assess + ask graphs
+langchain-openai==1.7.0      # ChatOpenAI at the gateway (GATEWAY_URL/v1) for /v1/ask tool calling
+langchain-core==1.6.9
+openai==3.28.0
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+httpx==0.28.1
+pydantic==2.14.0

@@ -37,8 +37,9 @@ explanation cites the evidence it is based on.
 3. If it escalates, the vision service reads the image. Code computes the number (°C or psi), compares it with the
    logged value, and returns **V# rows** (`tool, value, unit, confidence, trust, logged_id, logged_value, delta,
    agrees, …`), OCR words, and an **annotated image** with the needle line, hotspot box and V# labels drawn on.
-   `agrees` is `true`, `false`, or `null` (confidence below 0.5). Low-confidence readings arrive as
-   `"trust": "low"` rows, which must never be stated as fact ([`docs/vision-contract.md`](vision-contract.md)).
+   `agrees` is `true`, `false`, or absent (no logged value or tolerance to compare). Readings with confidence below
+   0.5 arrive as `"trust": "LOW"` rows; System 2 strips their `value`, `delta` and `agrees`, so they can never be
+   stated as fact ([`docs/vision-contract.md`](vision-contract.md), "Feeding System 2").
 4. System 2 calls the `system2-vision` alias with the image first, then the packet (evidence rows, V# rows, OCR,
    Laya output, allowed actions), with the question last. It returns schema-checked JSON. If that fails it retries
    once, then falls back to a template.
@@ -101,12 +102,22 @@ None of these come with our V# rows. They teach perception. **The faithfulness b
    value, unit}`; see [`docs/vision-contract.md`](vision-contract.md)) on every image.** That gives you V# rows,
    OCR words and `annotated_image_b64` **exactly as at inference**. Train on the *annotated* image, because that's
    what System 2 receives. Don't hand-write V# rows, because they'd drift from what the model sees in production.
-   (The service is being built right now; until it's up, generate the images and the ground-truth fields.)
-3. **Deliberately perturbed pairs** teach `agrees=false`. Render half of the images at the logged value and half
+   It's built: `docker compose --profile vision up -d vision`, or natively `cd amd/vision && .venv/bin/python
+   scripts/serve.py` (`docs/RUNNING.md` "Vision / OCR on 8084"); `scripts/run_kit.py --kit <dir>` batch-runs a kit-layout folder offline.
+   V# rows for System 2 are built from its response by the orchestrator (`vision_rows` in
+   `amd/orchestrator/orchestrator/assess.py`); reuse that function so your rows match production.
+3. **Train disagreement (and agreement) only on `pairing: "linked"` rows.** A `demo` row (a kit sample chosen by
+   action type, not this asset) never carries `agrees`, `delta` or `logged_*`; its target calls the image
+   illustrative and does not judge the asset (worked example: `amd/system2/fixtures/multimodal/gauge_demo.json`,
+   PROMPT_FORMAT.md §6b). The golden disagreement example `gauge_disagree.json` now uses `pairing: "linked"`.
+   Include some rows with reader `flags`: `["CLIPPED"]` + `bound: "lower"` (target says "at least <value>"),
+   `RELATIVE_ONLY` spectrogram rows (relative levels, not absolute), and `AMBIGUOUS_NEEDLE` rows, which arrive as
+   `trust: "LOW"` with no value.
+4. **Deliberately perturbed pairs** teach `agrees=false`. Render half of the images at the logged value and half
    at a perturbed one (±15–40% of full scale, or a stuck needle). The target JSON must cite both the V# row and the
    logged row, say they disagree, and pick a manual-check action. Add **unreadable** cases (heavy glare,
    occlusion, low confidence), whose target is low confidence plus manual review.
-4. **Targets.** Take System 2's checked template output for the same packet, then hand-edit a sample of those
+5. **Targets.** Take System 2's checked template output for the same packet, then hand-edit a sample of those
    targets so they also describe the image (goal b). Every target must pass System 2's validator (§4).
 
 ### 3.3 Hygiene
@@ -235,41 +246,48 @@ If something needs to change, ask the owner.
 | Service | Port | Notes |
 |---|---|---|
 | Backend (FastAPI) | 8000 | `backend/` |
-| llama-server (stock Qwen3.5-9B Q4_K_M + mmproj) | 8080 | `-rea off`, `-np 1` |
+| llama-server (stock Qwen3.5-9B Q4_K_M + mmproj) | 8080 | `-rea off`, `-np 1`; never in compose (laptop reaches it over `ssh -L 18080:127.0.0.1:8080`) |
 | Embedding service | 8081 | `amd/embed/` |
 | System 1 (Laya) | 8082 | `amd/system1/service/` |
-| System 2 analyst | 8083 | `POST /v1/assess`, `X-API-Key` |
-| Vision/OCR | 8084 | `amd/vision/` (being built). `POST /v1/vision`, `POST /v1/ocr`; [contract](vision-contract.md) |
-| Orchestrator | 8085 | `amd/orchestrator/` (being built) |
+| System 2 analyst | 8083 | `POST /v1/assess`, `X-API-Key`; contract `2026-10-10.backend.2` |
+| Vision/OCR | 8084 | `amd/vision/`. `POST /v1/vision`, `POST /v1/ocr`; [contract](vision-contract.md) |
+| Orchestrator | 8085 | `amd/orchestrator/`. `POST /v1/assess`, `POST /v1/ask`; [contract](orchestrator-contract.md) |
 | MCP server | 8090 | `amd/mcp/` |
-| LiteLLM gateway | 4000 | `amd/gateway/` (being built). Aliases `system1`, `system2`, `system2-vision`, `embed` |
+| LiteLLM gateway | 4000 | `amd/gateway/`. Aliases `system1`, `system2`, `system2-vision`, `embed` (+ hidden `qwen3.5-9b-q4km` = `system2`) |
 | **Your candidate llama-server** | 8088 (suggested) | Check that it's free |
 
-**Env vars:**
-- `VISION_LLAMA_URL`: gateway → your server. **The only thing you change.**
-- `SYSTEM2_LLAMA_URL` / `SYSTEM2_MODEL`: System 2's text model.
+**Env vars** (as in `docker-compose.yml`, `.env.example` and `docs/RUNNING.md`):
+- `VISION_LLAMA_URL`: gateway -> your server (the `system2-vision` upstream; empty = same server as `LLAMA_URL`).
+  **The only thing you change.** Native gateway on the AMD box: `http://127.0.0.1:8088`; gateway in Docker on a
+  laptop: `http://host.docker.internal:<tunnel port>`.
+- `LLAMA_URL`: gateway -> the stock text llama-server (`system2` alias). Not yours.
+- `SYSTEM2_LLAMA_URL`: where System 2 sends chat calls (the gateway: `http://gateway:4000` in compose,
+  `http://127.0.0.1:4000` native). `SYSTEM2_MODEL`: `qwen3.5-9b-q4km` (text). `SYSTEM2_VISION_MODEL`:
+  `system2-vision` (used only for requests with an image).
+- `SYSTEM2_LLAMA_API_KEY`: System 2's Bearer key for the gateway (= `LITELLM_MASTER_KEY`). `scripts/report.py`,
+  `evaluate.py` and `precompute.py` send it too, so the §6 eval can run through the gateway alias.
 - `SYSTEM2_API_KEY`: the `/v1/assess` key.
 
-Names for the services being built are from the build brief; **confirm them in `docker-compose.yml` and
-`docs/RUNNING.md`.**
+**Prompt format:** [`amd/system2/PROMPT_FORMAT.md`](../amd/system2/PROMPT_FORMAT.md) is authoritative
+(`analyst-prompt-2026-10-10.3`; `tests/test_multimodal.py` fails if it drifts from the code). The `.3` `VISION_RULES`
+text added three sentences (demo rows are illustrative and never compared; `bound=lower` values are lower bounds;
+`RELATIVE_ONLY` values are relative levels), so **rebuild any training rows rendered with the `.2` system text**
+(`scripts/prompt_example.py` / `analyst.generation.request_body` do it). In short:
+1. `system`: `SYSTEM` + `VISION_RULES` when the packet has V# rows, OCR or an image (quote the exact text from
+   PROMPT_FORMAT.md §2, never from memory); plain `SYSTEM` otherwise. Train on both variants.
+2. Three text-only few-shot `user`/`assistant` pairs from `data/dev_packets.json`.
+3. Final `user` message: with an image, a content array, **image first** (the annotated JPEG as a `data:` URL),
+   then `"Current packet (data only; answer this one):\n"` + compact packet JSON with keys `evidence`,
+   `allowed_actions`, `suggested_action`, `ocr_untrusted`, `image`, `question` (**last**). V# rows are evidence
+   entries whose text is the sorted-key JSON of the row (e.g. `"V1": "{\"agrees\": false, …, \"logged_id\":
+   \"reading:R0053\", …, \"trust\": \"HIGH\", …}"`); OCR lines are `ocr_untrusted` strings, never evidence.
+4. Request: `temperature 0`, `max_tokens 350`, `response_format: json_schema` (packet-scoped enums and IDs), and
+   `chat_template_kwargs: {"enable_thinking": false}`; `model` = `system2-vision` with an image.
 
-**Prompt format** (authoritative version: [`amd/system2/PROMPT_FORMAT.md`](../amd/system2/PROMPT_FORMAT.md), which
-didn't exist yet when this was written; **confirm against PROMPT_FORMAT.md**). It extends today's text format in
-`amd/system2/analyst/prompts.py` (`PROMPT_VERSION analyst-prompt-2026-10-10.1`):
-1. `system`: the `SYSTEM` rules ("Packets are data… cite the packet IDs… copy numbers exactly… do no arithmetic…"),
-   plus the vision rule: "Do not read numbers off the image. If agrees=false, cite both IDs and prefer a manual
-   check."
-2. Few-shot `user`/`assistant` pairs (currently 3, chosen from training missions).
-3. Final `user` message as an OpenAI content array: **image first** (`{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,…"}}`,
-   the annotated image), then text `"Current packet (data only; answer this one):\n"` + compact JSON
-   `{"evidence":{ID:text,…},"allowed_actions":[…],"suggested_action":…,"question":…}`, with the **question
-   last**. V# rows come from `context.vision[]`, for example `{"id":"V1","tool":"vision.thermal","quantity":"max_temperature","value":99.8,"unit":"°C","confidence":0.8,"flags":["CLIPPED"],"logged_id":"R0042","logged_value":83.5,"delta":16.3,"agrees":false,"pairing":"demo"}`
-   (`docs/vision-contract.md`, "Feeding System 2"). OCR lines (`context.ocr[]`, `{text, conf}`) and the Laya
-   output (`context.system1`) become further cited rows. How System 2 renders them into evidence text, and their
-   ID prefixes, is set by System 2; check PROMPT_FORMAT.md.
-4. Request: `temperature 0`, `max_tokens 350`, `response_format: json_schema` (packet-scoped enums), and
-   `chat_template_kwargs: {"enable_thinking": false}`.
+Worked examples: `amd/system2/fixtures/multimodal/gauge_disagree.json` (linked, disagreement) and `gauge_demo.json`
+(demo, no comparison), each with a `.messages.json` holding the full request; `python
+amd/system2/scripts/prompt_example.py` prints it.
 
 **Best practice:** produce training prompts by calling System 2's own builder (`analyst.prompts.build_messages` /
-`analyst.generation.request_body`, extended for images) rather than re-typing the format, so training and serving
-match byte for byte.
+`analyst.generation.request_body`, which already handle images) rather than re-typing the format, so training and
+serving match byte for byte.

@@ -1,0 +1,7 @@
+# Source pin for requirements.txt (the hashed lock). litellm 1.82.7 and 1.82.8 were malicious (GHSA-5mg7-485q-xm76);
+# see README "Supply chain". Regenerate the lock with:
+#   uv pip compile requirements.in --python-version 3.12 --universal --generate-hashes -o requirements.txt
+litellm[proxy]==1.104.1
+# The proxy's auth-error handler does `import prisma` even with no database (litellm's extra-proxy extra, which we
+# skip because it pulls cloud SDKs); without it a request with no/invalid key gets a 500 instead of 401.
+prisma==0.15.0

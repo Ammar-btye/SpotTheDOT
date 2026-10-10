@@ -1,0 +1,15 @@
+.git
+.venv
+venv
+**/__pycache__
+.pytest_cache
+.env
+.env.*
+*.pem
+*.key
+tests
+scripts
+*.md
+requirements.in
+requirements-dev.txt
+pytest.ini

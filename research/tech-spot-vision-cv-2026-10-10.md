@@ -183,7 +183,7 @@ Not worth doing:
   - It calls llama-server for VLM label reading.
   - Sync, with a timeout; cache keyed on `sha256(image) + versions`.
   - Write `docs/vision-contract.md` first; add a compose service, ports table and RUNNING.md entry (CLAUDE.md rules); run in a venv on the AMD VM.
-  - **Contract to resolve:** the System 2 pass sketched `/v1/vision` on System 2's port (8083). Recommendation: keep the request/response shape and move it to the vision service.
+  - **Contract resolved:** separate vision service on :8084 (`docs/vision-contract.md`). The System 2 pass had sketched `/v1/vision` on System 2's port (8083); the request/response shape moved to the vision service.
 - **Mirror Orbit's data model**, which NextEra's Spot operators will recognise:
   - output `dataCaptures[].keyResults[{name, units, value}]` plus `alert{title, severity 0–4, source}`
   - plus our own fields: `logged_value`, `delta`, `agrees`, `router`, `annotated_image`

@@ -82,6 +82,15 @@ async def test_explain_real_system2_done_and_cache(make_harness, mock, real_syst
             assert body["source"] == "template" and stored["state"] == "TEMPLATE"
             assert "HTTP 401" in body["fallback_reason"] and not calls[0]["ok"]
             return
+        if mode == "insufficient":
+            # Audit A-8/P-5: System 2's insufficient_context reply is its checked template, not a model answer:
+            # returned as system2_template, stored TEMPLATE (not final) and asked again next time.
+            assert body["source"] == "system2_template" and body["answer"] and body["assessment_id"]
+            assert stored["state"] == "TEMPLATE" and stored["model"] == body["model"] == "stub"
+            assert body["confidence"] == 0.35 and body["insufficient_context"] and body["evidence"] == []
+            second = (await h.client.post("/api/v1/flags/%d/explain" % fid)).json()
+            assert not second["cached"] and second["source"] == "system2_template" and len(seen) == 2
+            return
         assert body["source"] == "system2" and body["answer"] and body["assessment_id"]
         assert stored["state"] == "DONE" and stored["model"] == body["model"] == "stub"
         # Existing persistence stores textual reasoning, action and numeric confidence;
