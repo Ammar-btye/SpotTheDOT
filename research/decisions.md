@@ -27,5 +27,7 @@ Single source of truth. Each entry is the decision plus why, in one or two lines
 - **System 2 eval (2026-10-10):** headline numbers on real mission-held-out flags only, with bootstrap CIs and a human-checked judge; the templated explanation is both the fallback and the baseline. Only ~40 real anomalies, so synthetic data can't inflate the numbers.
 
 ## Pending
+- **Vision service + Qwen vision fine-tune (2026-10-10, proposed in `docs/TEAMMATE-qwen-vision-finetune.md`):** code readers compute every number in `amd/vision` (:8084), the VLM only explains; phase 1 handed to Codex (`docs/CODEX-KICKOFF-vision.md`). Moves to Made once the contract lands.
+- **LiteLLM gateway (:4000) and LangGraph orchestrator (:8085)** from the same brief: not built, no contract yet. Laya isn't an OpenAI-style model, so a gateway alias for it needs a custom handler.
 - Exact ROCm serving stack on gfx1151 (research agent running).
 - Roles.
