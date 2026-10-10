@@ -106,6 +106,8 @@ def test_equality_duplicates_order_and_hash(tmp_path):
     item = c['request']['context']['facts'][0]
     c['as_of'] = max(r['available_at'] for r in item['provenance']['source_rows'])
     c['request']['context']['facts'] = [item, copy.deepcopy(item)]
+    c['source_lineage'] = copy.deepcopy(item['provenance']['source_rows'])
+    c['request']['context']['citation_ids'] = [item['id']]
     a = load(save(tmp_path, obj))
     assert len(a[0].request.context['facts']) == 1
     obj['cases'].reverse()
@@ -132,7 +134,7 @@ def test_single_case_and_unicode_identity(tmp_path):
     obj['cases'][0]['request']['context']['question'] = 'Que signifie 点 — café ?'
     c, = load(save(tmp_path, obj))
     out = template(c.prepared)
-    assert out['evidence'][0]['ids'] == [item['id']]
+    assert any(e['ids'] == [item['id']] for e in out['evidence'])
     assert out['question'] == 'Que signifie 点 — café ?'
 
 

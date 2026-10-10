@@ -1,0 +1,427 @@
+{
+  "cases": [
+    {
+      "as_of": "2026-09-02T10:28:00",
+      "case_id": "kit-data_quality",
+      "category": "data_quality",
+      "mission_id": "M003",
+      "reference": null,
+      "request": {
+        "context": {
+          "allowed_actions": {
+            "CHECK_SENSOR_PAYLOAD": "inspect SPOT's sensor payload / camera for faults",
+            "MANUAL_READING": "have a technician take the reading by hand",
+            "MONITOR": "no action now; keep watching",
+            "REINSPECT_NEXT_ROUTE": "repeat the inspection on the next route",
+            "REINSPECT_NOW": "send SPOT back to repeat the inspection now"
+          },
+          "citation_ids": [
+            "F1",
+            "F2"
+          ],
+          "facts": [
+            {
+              "fact": "action_id=A0030; mission_id=M003; timestamp=2026-09-02T10:28:00; action_type=GAUGE_READING; location_id=WP04; asset_id=COMP-214; battery_pct=17; status=FAILED; failure_type=SENSOR_TIMEOUT; duration_sec=87",
+              "id": "F1",
+              "provenance": {
+                "kind": "dynamic",
+                "source_rows": [
+                  {
+                    "available_at": "2026-09-02T10:28:00",
+                    "row_hash": "7e3472f6a6f3ca805bfaa60dc3ddfcd41a25e58952e54ece35aed5f20a9d8596",
+                    "row_id": "A0030",
+                    "table": "actions"
+                  }
+                ]
+              }
+            },
+            {
+              "fact": "reading_id=R0053; action_id=A0030; mission_id=M003; timestamp=2026-09-02T10:28:00; asset_id=COMP-214; location_id=WP04; measurement_type=PRESSURE_PSI; value=114.2; unit=psi; quality=QUESTIONABLE",
+              "id": "F2",
+              "provenance": {
+                "kind": "dynamic",
+                "source_rows": [
+                  {
+                    "available_at": "2026-09-02T10:28:00",
+                    "row_hash": "a9ef56675de395cf185ee95494e32a6015399df4b1a6b8e1fe23dbae66e6437a",
+                    "row_id": "R0053",
+                    "table": "readings"
+                  }
+                ]
+              }
+            }
+          ],
+          "missing": [],
+          "question": "What needs operator attention for this data_quality event?",
+          "suggested_action": "REINSPECT_NOW"
+        },
+        "flag": {
+          "category": "data_quality"
+        },
+        "flag_id": 1
+      },
+      "source_lineage": [
+        {
+          "available_at": "2026-09-02T10:28:00",
+          "row_hash": "7e3472f6a6f3ca805bfaa60dc3ddfcd41a25e58952e54ece35aed5f20a9d8596",
+          "row_id": "A0030",
+          "table": "actions"
+        },
+        {
+          "available_at": "2026-09-02T10:28:00",
+          "row_hash": "a9ef56675de395cf185ee95494e32a6015399df4b1a6b8e1fe23dbae66e6437a",
+          "row_id": "R0053",
+          "table": "readings"
+        }
+      ],
+      "split": "train"
+    },
+    {
+      "as_of": "2026-09-01T18:27:54",
+      "case_id": "kit-equipment",
+      "category": "equipment",
+      "mission_id": "M001",
+      "reference": null,
+      "request": {
+        "context": {
+          "allowed_actions": {
+            "DISPATCH_TECHNICIAN": "send a technician to inspect the equipment this shift",
+            "ESCALATE_TO_SUPERVISOR": "notify the shift supervisor now (critical asset or critical anomaly)",
+            "MONITOR": "no action now; keep watching the trend",
+            "REINSPECT_NEXT_ROUTE": "re-check this asset on SPOT's next route and compare",
+            "SCHEDULE_MAINTENANCE": "open a maintenance work order for the next maintenance window"
+          },
+          "citation_ids": [
+            "F1",
+            "F2",
+            "F3"
+          ],
+          "facts": [
+            {
+              "fact": "action_id=A0009; mission_id=M001; timestamp=2026-09-01T18:27:54; action_type=VISUAL_INSPECTION; location_id=WP03; asset_id=HX-208; battery_pct=22; status=FAILED; failure_type=SENSOR_TIMEOUT; duration_sec=61",
+              "id": "F1",
+              "provenance": {
+                "kind": "dynamic",
+                "source_rows": [
+                  {
+                    "available_at": "2026-09-01T18:27:54",
+                    "row_hash": "e41c0ab523cdcc151dd492dfc45480e4af379aab573a27d056c7c3f637abccd5",
+                    "row_id": "A0009",
+                    "table": "actions"
+                  }
+                ]
+              }
+            },
+            {
+              "fact": "reading_id=R0150; action_id=A0009; mission_id=M001; timestamp=2026-09-01T18:27:54; asset_id=HX-208; location_id=WP03; measurement_type=VISUAL_SCORE; value=75; unit=score; quality=QUESTIONABLE",
+              "id": "F2",
+              "provenance": {
+                "kind": "dynamic",
+                "source_rows": [
+                  {
+                    "available_at": "2026-09-01T18:27:54",
+                    "row_hash": "baf8c8b24dab2ca05cb5cb40198fc8280f800324ea24b4346b678a7b78511322",
+                    "row_id": "R0150",
+                    "table": "readings"
+                  }
+                ]
+              }
+            },
+            {
+              "fact": "anomaly_id=AN009; action_id=A0009; mission_id=M001; timestamp=2026-09-01T18:27:54; asset_id=HX-208; location_id=WP03; anomaly_type=VISUAL_DEFECT; severity=HIGH; description=Synthetic visual defect detected.",
+              "id": "F3",
+              "provenance": {
+                "kind": "dynamic",
+                "source_rows": [
+                  {
+                    "available_at": "2026-09-01T18:27:54",
+                    "row_hash": "66b5ba5d3858e5e6c7fc4a193ca4186f6db9a7d242c5d6a8b62753942e7d5b52",
+                    "row_id": "AN009",
+                    "table": "anomalies"
+                  }
+                ]
+              }
+            }
+          ],
+          "missing": [],
+          "question": "What needs operator attention for this equipment event?",
+          "suggested_action": "DISPATCH_TECHNICIAN"
+        },
+        "flag": {
+          "category": "equipment"
+        },
+        "flag_id": 2
+      },
+      "source_lineage": [
+        {
+          "available_at": "2026-09-01T18:27:54",
+          "row_hash": "e41c0ab523cdcc151dd492dfc45480e4af379aab573a27d056c7c3f637abccd5",
+          "row_id": "A0009",
+          "table": "actions"
+        },
+        {
+          "available_at": "2026-09-01T18:27:54",
+          "row_hash": "66b5ba5d3858e5e6c7fc4a193ca4186f6db9a7d242c5d6a8b62753942e7d5b52",
+          "row_id": "AN009",
+          "table": "anomalies"
+        },
+        {
+          "available_at": "2026-09-01T18:27:54",
+          "row_hash": "baf8c8b24dab2ca05cb5cb40198fc8280f800324ea24b4346b678a7b78511322",
+          "row_id": "R0150",
+          "table": "readings"
+        }
+      ],
+      "split": "train"
+    },
+    {
+      "as_of": "2026-09-01T18:00:00",
+      "case_id": "kit-insufficient_context",
+      "category": "insufficient_context",
+      "mission_id": "M001",
+      "reference": null,
+      "request": {
+        "context": {
+          "allowed_actions": {
+            "MANUAL_REVIEW": "request operator review"
+          },
+          "citation_ids": [],
+          "facts": [],
+          "missing": [
+            "event evidence unavailable"
+          ],
+          "question": "What needs operator attention for this insufficient_context event?",
+          "suggested_action": "MANUAL_REVIEW"
+        },
+        "flag": {
+          "category": "insufficient_context"
+        },
+        "flag_id": 6
+      },
+      "source_lineage": [],
+      "split": "train"
+    },
+    {
+      "as_of": "2026-09-01T18:31:00",
+      "case_id": "kit-mission",
+      "category": "mission",
+      "mission_id": "M001",
+      "reference": null,
+      "request": {
+        "context": {
+          "allowed_actions": {
+            "CHARGE_BEFORE_NEXT_MISSION": "fully charge SPOT before the next mission",
+            "MONITOR": "no action now",
+            "RERUN_FAILED_ACTIONS": "schedule a mission that repeats only the failed actions",
+            "REVIEW_MISSION": "review the mission's failed actions and anomalies before signing it off"
+          },
+          "citation_ids": [
+            "F1"
+          ],
+          "facts": [
+            {
+              "fact": "mission_id=M001; mission_name=Autowalk Inspection Route 01; end_time=2026-09-01T18:31:00; mission_status=COMPLETED; start_battery_pct=82; end_battery_pct=15",
+              "id": "F1",
+              "provenance": {
+                "kind": "dynamic",
+                "source_rows": [
+                  {
+                    "available_at": "2026-09-01T18:31:00",
+                    "row_hash": "2b9cef43348c2ef902696a9ce67ff916f967f8d4137566505a2eef0ca3024f13",
+                    "row_id": "M001",
+                    "table": "missions"
+                  }
+                ]
+              }
+            }
+          ],
+          "missing": [],
+          "question": "What needs operator attention for this mission event?",
+          "suggested_action": "REVIEW_MISSION"
+        },
+        "flag": {
+          "category": "mission"
+        },
+        "flag_id": 5
+      },
+      "source_lineage": [
+        {
+          "available_at": "2026-09-01T18:31:00",
+          "row_hash": "2b9cef43348c2ef902696a9ce67ff916f967f8d4137566505a2eef0ca3024f13",
+          "row_id": "M001",
+          "table": "missions"
+        }
+      ],
+      "split": "train"
+    },
+    {
+      "as_of": "2026-09-01T18:03:06",
+      "case_id": "kit-navigation",
+      "category": "navigation",
+      "mission_id": "M001",
+      "reference": null,
+      "request": {
+        "context": {
+          "allowed_actions": {
+            "ADJUST_WAYPOINT": "move or re-record the waypoint / add fiducials (noisy or low-light area)",
+            "CLEAR_PATH": "have someone remove the obstacle blocking SPOT's path",
+            "MONITOR": "no action now; keep watching",
+            "REINSPECT_NOW": "retry the waypoint now",
+            "UPDATE_AUTOWALK_MAP": "re-record the Autowalk route segment"
+          },
+          "citation_ids": [
+            "F1",
+            "F2",
+            "F3"
+          ],
+          "facts": [
+            {
+              "fact": "action_id=A0001; mission_id=M001; timestamp=2026-09-01T18:03:06; action_type=NAVIGATION; location_id=WP05; asset_id=HX-201; battery_pct=75; status=FAILED; failure_type=OBSTACLE_DETECTION; duration_sec=67",
+              "id": "F1",
+              "provenance": {
+                "kind": "dynamic",
+                "source_rows": [
+                  {
+                    "available_at": "2026-09-01T18:03:06",
+                    "row_hash": "cd5db42c119f5e264b12604d93437c858d6ac9e0bd13b67947542ed2b60293e1",
+                    "row_id": "A0001",
+                    "table": "actions"
+                  }
+                ]
+              }
+            },
+            {
+              "fact": "reading_id=R0010; action_id=A0001; mission_id=M001; timestamp=2026-09-01T18:03:06; asset_id=HX-201; location_id=WP05; measurement_type=LOCALIZATION_CONFIDENCE_PCT; value=44.4; unit=pct; quality=QUESTIONABLE",
+              "id": "F2",
+              "provenance": {
+                "kind": "dynamic",
+                "source_rows": [
+                  {
+                    "available_at": "2026-09-01T18:03:06",
+                    "row_hash": "fb2a916c406fc5e6cf10aef3eb0aa9e18ba081f028097d674bc6fcb18e8e003c",
+                    "row_id": "R0010",
+                    "table": "readings"
+                  }
+                ]
+              }
+            },
+            {
+              "fact": "anomaly_id=AN024; action_id=A0001; mission_id=M001; timestamp=2026-09-01T18:03:06; asset_id=HX-201; location_id=WP05; anomaly_type=NAVIGATION_OBSTRUCTION; severity=LOW; description=Synthetic navigation obstruction detected.",
+              "id": "F3",
+              "provenance": {
+                "kind": "dynamic",
+                "source_rows": [
+                  {
+                    "available_at": "2026-09-01T18:03:06",
+                    "row_hash": "f5c7d6a1ee828a60ffe2707ae8629107fd97ae6532700bb81f90cecc0d39b1ae",
+                    "row_id": "AN024",
+                    "table": "anomalies"
+                  }
+                ]
+              }
+            }
+          ],
+          "missing": [],
+          "question": "What needs operator attention for this navigation event?",
+          "suggested_action": "REINSPECT_NOW"
+        },
+        "flag": {
+          "category": "navigation"
+        },
+        "flag_id": 3
+      },
+      "source_lineage": [
+        {
+          "available_at": "2026-09-01T18:03:06",
+          "row_hash": "cd5db42c119f5e264b12604d93437c858d6ac9e0bd13b67947542ed2b60293e1",
+          "row_id": "A0001",
+          "table": "actions"
+        },
+        {
+          "available_at": "2026-09-01T18:03:06",
+          "row_hash": "f5c7d6a1ee828a60ffe2707ae8629107fd97ae6532700bb81f90cecc0d39b1ae",
+          "row_id": "AN024",
+          "table": "anomalies"
+        },
+        {
+          "available_at": "2026-09-01T18:03:06",
+          "row_hash": "fb2a916c406fc5e6cf10aef3eb0aa9e18ba081f028097d674bc6fcb18e8e003c",
+          "row_id": "R0010",
+          "table": "readings"
+        }
+      ],
+      "split": "train"
+    },
+    {
+      "as_of": "2026-09-01T18:21:42",
+      "case_id": "kit-robot_health",
+      "category": "robot_health",
+      "mission_id": "M001",
+      "reference": null,
+      "request": {
+        "context": {
+          "allowed_actions": {
+            "ABORT_MISSION": "stop the current mission",
+            "CHARGE_BEFORE_NEXT_MISSION": "fully charge SPOT before the next mission",
+            "CHECK_COMMS": "check radio / network coverage at this waypoint",
+            "MONITOR": "no action now; keep watching",
+            "RETURN_TO_DOCK": "send SPOT to the dock now"
+          },
+          "citation_ids": [
+            "F1"
+          ],
+          "facts": [
+            {
+              "fact": "action_id=A0007; mission_id=M001; timestamp=2026-09-01T18:21:42; action_type=VISUAL_INSPECTION; location_id=WP15; asset_id=PUMP-205; battery_pct=35; status=SUCCESS; duration_sec=42",
+              "id": "F1",
+              "provenance": {
+                "kind": "dynamic",
+                "source_rows": [
+                  {
+                    "available_at": "2026-09-01T18:21:42",
+                    "row_hash": "7288814a3e4f823be938b80f357420b98772688c48ce6d9e89437beab67075af",
+                    "row_id": "A0007",
+                    "table": "actions"
+                  }
+                ]
+              }
+            }
+          ],
+          "missing": [],
+          "question": "What needs operator attention for this robot_health event?",
+          "suggested_action": "RETURN_TO_DOCK"
+        },
+        "flag": {
+          "category": "robot_health"
+        },
+        "flag_id": 4
+      },
+      "source_lineage": [
+        {
+          "available_at": "2026-09-01T18:21:42",
+          "row_hash": "7288814a3e4f823be938b80f357420b98772688c48ce6d9e89437beab67075af",
+          "row_id": "A0007",
+          "table": "actions"
+        }
+      ],
+      "split": "train"
+    }
+  ],
+  "manifest": {
+    "case_count": 6,
+    "content_hash": "1b1ed4375b4476111601c279e36396fc3e88753c055e0fe60d982301039d8c02",
+    "holdout_fold": 2,
+    "holdout_missions": [
+      "M006",
+      "M009",
+      "M012",
+      "M013",
+      "M017",
+      "M018",
+      "M019",
+      "M020",
+      "M023"
+    ],
+    "policy_version": "saved-kit-fold2-asof-v1"
+  }
+}
