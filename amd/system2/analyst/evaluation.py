@@ -159,10 +159,17 @@ def request_hash(case: SavedCase) -> str:
 
 
 def packet_hash(p: PreparedPacket) -> str:
-    """Identity of the normalized evidence map and everything else a runner may use."""
-    return content_hash({'flag_id': p.flag_id, 'question': p.question, 'content': p.content,
-                         'allowed_actions': list(p.allowed_actions), 'suggested_action': p.suggested_action,
-                         'insufficient_context': p.insufficient_context})
+    """Identity of the normalized evidence map and everything else a runner may use.
+
+    backend.2 OCR lines and the image digest join only when present, so every backend.1 hash is unchanged."""
+    fields = {'flag_id': p.flag_id, 'question': p.question, 'content': p.content,
+              'allowed_actions': list(p.allowed_actions), 'suggested_action': p.suggested_action,
+              'insufficient_context': p.insufficient_context}
+    if p.ocr:
+        fields['ocr'] = list(p.ocr)
+    if p.image is not None:
+        fields['image_sha256'] = p.image.sha256
+    return content_hash(fields)
 
 
 def endpoint(url: Optional[str]) -> Optional[str]:

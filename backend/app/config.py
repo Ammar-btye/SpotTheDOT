@@ -53,6 +53,9 @@ class Settings:
     system2_url: Optional[str] = None
     system2_api_key: Optional[str] = None
     system2_timeout_s: float = 60.0
+    orchestrator_url: Optional[str] = None     # set -> /explain asks the LangGraph orchestrator first; unset -> unchanged
+    orchestrator_api_key: Optional[str] = None
+    orchestrator_timeout_s: float = 42.0       # REQUEST_DEADLINE_S (45) minus the 3 s reserve; ORCH_DEADLINE_S is 40
     kit_dir: Path = field(default_factory=lambda: _REPO_ROOT / "amd" / "system1" / "data" / "kit")
     triage_dir: Path = field(default_factory=lambda: _REPO_ROOT / "amd" / "system1")
     triage_mode: str = "serial"
@@ -97,6 +100,9 @@ class Settings:
             system2_url=(_env("SYSTEM2_URL") or "").rstrip("/") or None,
             system2_api_key=_env("SYSTEM2_API_KEY"),
             system2_timeout_s=float(_env("SYSTEM2_TIMEOUT_S", "60") or 60),
+            orchestrator_url=(_env("ORCHESTRATOR_URL") or "").rstrip("/") or None,
+            orchestrator_api_key=_env("ORCHESTRATOR_API_KEY"),
+            orchestrator_timeout_s=float(_env("ORCHESTRATOR_TIMEOUT_S", "42") or 42),
             kit_dir=_path("KIT_DIR", _REPO_ROOT / "amd" / "system1" / "data" / "kit"),
             triage_dir=_path("TRIAGE_DIR", _REPO_ROOT / "amd" / "system1"),
             triage_mode=mode,

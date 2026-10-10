@@ -1,0 +1,11 @@
+# Vision/OCR service runtime deps (CPU only; no torch, no model calls). Pinned: tested together on 2026-10-10.
+# AMD box / any venv:  python3 -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+# The RapidOCR wheel ships its PP-OCRv6 det/rec + cls ONNX models, so no runtime download is needed.
+rapidocr==3.10.0                  # PP-OCR pipeline (Apache-2.0)
+onnxruntime==1.31.0               # CPU execution provider (ROCm EP was dropped in 1.23; CPU is fast enough)
+opencv-python-headless==5.0.0.93  # Hough circles, blobs, remap; headless = no libGL in the image
+numpy==2.5.3
+pillow==12.3.0
+fastapi==0.143.0
+pydantic==2.14.0
+uvicorn==0.54.0

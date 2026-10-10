@@ -8,6 +8,8 @@ Fallbacks (the demo path never 500s):
   per-call timeouts; past it they return the same fallbacks, with `fallback_reason: "deadline: ..."`.
 - Template explanations are stored with state TEMPLATE (audit M10): not final, so /explain retries System 2 when
   SYSTEM2_URL is set, and they are never indexed as `explanation` RAG docs.
+- ORCHESTRATOR_URL set (docs/backend-services-contract.md "Orchestrator path"): /explain asks the LangGraph
+  orchestrator first; when it is down or had no context packet, the path above runs unchanged. Unset: no change.
 """
 from __future__ import annotations
 
@@ -35,6 +37,13 @@ class RequestDeadlineExceeded(TimeoutError):
 
 
 EXPLAIN_CONTEXT_SHARE = 0.4      # /explain: the context step gets at most this share of the deadline
+# Fields copied from the orchestrator's /v1/assess response (docs/orchestrator-contract.md "Response").
+ORCHESTRATOR_ANSWER_KEYS = ("question", "answer", "reasoning", "recommended_action", "recommended_action_code",
+                            "severity_assessment", "confidence", "model", "latency_ms", "tokens_per_sec",
+                            "insufficient_context", "evidence", "citations", "fallback_reason")
+ORCHESTRATOR_TRACE_KEYS = ("route", "route_reasons", "trace", "system1", "vision", "elapsed_ms")
+EXPLANATION_SOURCES = ("system2", "system2_template", "template", "system1")   # only system2 is stored DONE
+SYSTEM2_TEMPLATE_PATHS = ("fallback", "insufficient_context")   # System 2 paths that are its template, not the model
 STATE_SYSTEM2, STATE_TEMPLATE = "DONE", "TEMPLATE"
 
 
@@ -76,13 +85,18 @@ def band_check(r: Dict[str, Any], status: Optional[str]) -> Dict[str, Any]:
 
 
 class FlagService:
-    def __init__(self, repo, mcp, system2, embed, sink, deadline_s: float = 45.0):
+    def __init__(self, repo, mcp, system2, embed, sink, deadline_s: float = 45.0, orchestrator=None):
         self.repo = repo
         self.mcp = mcp
         self.system2 = system2
         self.embed = embed
         self.sink = sink
         self.deadline_s = deadline_s
+        self.orchestrator = orchestrator
+
+    @property
+    def orchestrated(self) -> bool:
+        return self.orchestrator is not None and self.orchestrator.configured
 
     async def load(self, flag_id: int, deadline: Optional[_Deadline] = None) -> Dict[str, Any]:
         if deadline is None:
@@ -236,19 +250,33 @@ class FlagService:
             gaps.append("some SQL lookups failed: %s" % short_error(exc))
 
     # ── explain ─────────────────────────────────────────────────────────────────────────────────
-    async def explain(self, flag_id: int, request_id: Optional[str], refresh: bool = False) -> Dict[str, Any]:
+    async def explain(self, flag_id: int, request_id: Optional[str], refresh: bool = False,
+                      image: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         deadline = _Deadline(self.deadline_s)
         row = await self.load(flag_id, deadline)
+        warning = None
+        if image and not self.orchestrated:
+            warning, image = "image ignored: ORCHESTRATOR_URL is not set", None
         cached = row.get("assessment")
-        if cached and not refresh:
+        if cached and not refresh and not image:
             # A System 2 explanation (DONE, model not 'template') is final. A template (state TEMPLATE, or a
-            # pre-M10 DONE row with model 'template') is reused only while System 2 is not configured.
+            # pre-M10 DONE row with model 'template') is reused only while neither System 2 nor the orchestrator
+            # is configured.
             is_template = cached.get("state") == STATE_TEMPLATE or cached.get("model") in ("template", None)
-            if cached.get("state") in (STATE_SYSTEM2, STATE_TEMPLATE) and not (is_template
-                                                                             and self.system2.configured):
-                return {**cached, "source": "template" if is_template else "system2", "cached": True}
+            retry = self.system2.configured or self.orchestrated
+            if cached.get("state") in (STATE_SYSTEM2, STATE_TEMPLATE) and not (is_template and retry):
+                out = {**cached, "source": "template" if is_template else "system2", "cached": True}
+                if warning:
+                    out["warning"] = warning
+                return out
         f = row["flag"]
         reserve = deadline.reserve()
+        orchestrator_error = None
+        if self.orchestrated:
+            result, orchestrator_error = await self._via_orchestrator(f, flag_id, request_id, refresh, image,
+                                                                      deadline, reserve)
+            if result is not None:
+                return await self._store(result, f, flag_id, request_id, deadline, warning)
         ctx_budget = min(deadline.remaining(reserve), EXPLAIN_CONTEXT_SHARE * deadline.total)
         context = await self._context(row, flag_id, request_id, deadline, ctx_budget)
         result: Dict[str, Any]
@@ -263,6 +291,11 @@ class FlagService:
             result = normalize_assessment(out)
             if not result.get("answer"):
                 raise ServiceUnavailable("system2", "response had no answer")
+            if out.get("path") in SYSTEM2_TEMPLATE_PATHS or out.get("model") == "template":
+                # System 2's own checked template, not a model answer: stored TEMPLATE, never indexed (audit A-8/P-5)
+                result["source"] = "system2_template"
+                result["fallback_reason"] = "System 2 answered with its checked template (path %s, model %s)" % (
+                    out.get("path"), out.get("model"))
         except ServiceUnavailable as exc:
             result = template_explanation(f, row.get("event"), context)
             result["fallback_reason"] = exc.reason
@@ -271,15 +304,54 @@ class FlagService:
             result["fallback_reason"] = "deadline: System 2 did not answer within %.1fs (REQUEST_DEADLINE_S=%gs)" % (
                 s2_budget, deadline.total)
         result["context_source"] = context.get("source")
+        if orchestrator_error:
+            result["orchestrator"] = {"error": orchestrator_error}
+        return await self._store(result, f, flag_id, request_id, deadline, warning)
+
+    async def _via_orchestrator(self, f: Dict[str, Any], flag_id: int, request_id: Optional[str], refresh: bool,
+                                image: Optional[Dict[str, Any]], deadline: _Deadline,
+                                reserve: float) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """(explanation, None) from the orchestrator's /v1/assess, or (None, why) to run the existing path."""
+        budget = deadline.remaining(reserve)
+        if budget < 0.5:
+            return None, "deadline: no time left for the orchestrator"
+        body: Dict[str, Any] = {"flag_id": flag_id, "request_id": request_id, "refresh": refresh}
+        if image:
+            body.update({k: v for k, v in image.items() if k in ("image_b64", "image_kind") and v})
+        try:
+            out = await asyncio.wait_for(self.orchestrator.assess(body, request_id=request_id, flag_id=flag_id,
+                                                                  action_id=f.get("action_id"), timeout_s=budget),
+                                         budget)
+        except ServiceUnavailable as exc:
+            return None, exc.reason
+        except asyncio.TimeoutError:
+            return None, "deadline: the orchestrator did not answer within %.1fs (REQUEST_DEADLINE_S=%gs)" % (
+                budget, deadline.total)
+        if out.get("context_source") in (None, "none"):
+            return None, "orchestrator had no context packet (%s)" % (out.get("fallback_reason") or "no reason")
+        if not out.get("answer"):
+            return None, "orchestrator response had no answer"
+        result = {k: out.get(k) for k in ORCHESTRATOR_ANSWER_KEYS}
+        result["source"] = out.get("source") if out.get("source") in EXPLANATION_SOURCES else "template"
+        result["context_source"] = out.get("context_source")
+        result["orchestrator"] = {k: out.get(k) for k in ORCHESTRATOR_TRACE_KEYS}
+        return result, None
+
+    async def _store(self, result: Dict[str, Any], f: Dict[str, Any], flag_id: int, request_id: Optional[str],
+                     deadline: _Deadline, warning: Optional[str] = None) -> Dict[str, Any]:
+        """Store the explanation (DONE only for System 2, else TEMPLATE) and index System 2 ones as RAG docs."""
         state = STATE_SYSTEM2 if result.get("source") == "system2" else STATE_TEMPLATE
+        if warning:
+            result["warning"] = warning
         try:
             stored = await asyncio.wait_for(self.repo.upsert_assessment(flag_id, result, state=state),
                                             max(0.5, deadline.remaining()))
             result["assessment_id"] = stored.get("assessment_id")
         except (DatabaseUnavailable, psycopg.Error) as exc:
-            result["warning"] = "assessment not stored: %s" % short_error(exc)
+            result["warning"] = "; ".join(w for w in (warning, "assessment not stored: %s" % short_error(exc)) if w)
         except asyncio.TimeoutError:
-            result["warning"] = "assessment not stored: the request deadline passed"
+            result["warning"] = "; ".join(w for w in (warning, "assessment not stored: the request deadline passed")
+                                          if w)
         if result.get("assessment_id") and state == STATE_SYSTEM2:
             self.sink.spawn(self._index_explanation(result, f, request_id))
         result["cached"] = False

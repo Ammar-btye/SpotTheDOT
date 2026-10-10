@@ -6,6 +6,7 @@
                                                                (non-destructive; see seed() for --force-reseed)
   python db/setup.py reset --yes [--include-logs]              drop public.* (and raw/app with --include-logs), re-migrate
   python db/setup.py status                                    row counts
+  (the knowledge graph is built by db/graph_build.py, after ingest; `db/job.sh graph`)
 
 Env: DATABASE_URL (required), LOGS_DATABASE_URL (raw.* + app.*; defaults to DATABASE_URL), EMBED_DIM (default 1024).
 Works unchanged against Neon (sslmode=require is added for *.neon.tech URLs) and a local Postgres.
@@ -53,18 +54,32 @@ def _render(sql: str, conn) -> str:
             .replace("{{VEC_OPS}}", vec_ops).replace("{{HNSW_SET}}", hnsw_set))
 
 
+def _embedding_type(conn, table: str):
+    row = conn.execute("SELECT format_type(atttypid, atttypmod) FROM pg_attribute "
+                       "WHERE attrelid = to_regclass(%s) AND attname = 'embedding'", (table,)).fetchone()
+    return row[0] if row else None
+
+
+def _drop_graph(conn, why: str) -> None:
+    # The graph (009_graph.sql) is derived data: `db/job.sh graph` rebuilds it in seconds.
+    print("dropping kg_edges + kg_nodes (%s); rebuild with `db/job.sh graph`" % why)
+    conn.execute("DROP TABLE IF EXISTS kg_edges, kg_nodes CASCADE")
+
+
 def _check_documents_dim(conn, recreate: bool) -> None:
     dim, vec_type, _ = _vec_config()
-    row = conn.execute("SELECT format_type(atttypid, atttypmod) FROM pg_attribute "
-                       "WHERE attrelid = to_regclass('public.documents') AND attname = 'embedding'").fetchone()
     want = "%s(%d)" % (vec_type, dim)
-    if row is None or row[0] == want:
-        return
-    if not recreate:
-        sys.exit("documents.embedding is %s but EMBED_DIM=%d wants %s. Re-run with `migrate --recreate-documents` "
-                 "(drops the RAG store; re-run ingest after) or fix EMBED_DIM." % (row[0], dim, want))
-    print("dropping documents (%s -> %s)" % (row[0], want))
-    conn.execute("DROP TABLE documents CASCADE")
+    have = _embedding_type(conn, "public.documents")
+    if have is not None and have != want:
+        if not recreate:
+            sys.exit("documents.embedding is %s but EMBED_DIM=%d wants %s. Re-run with `migrate --recreate-documents` "
+                     "(drops the RAG store; re-run ingest after) or fix EMBED_DIM." % (have, dim, want))
+        _drop_graph(conn, "documents is recreated")      # else the CASCADE would silently drop kg_nodes' FK
+        print("dropping documents (%s -> %s)" % (have, want))
+        conn.execute("DROP TABLE documents CASCADE")
+    have = _embedding_type(conn, "public.kg_nodes")
+    if have is not None and have != want:
+        _drop_graph(conn, "kg_nodes.embedding is %s, EMBED_DIM wants %s" % (have, want))
 
 
 def _apply(conn, path: Path) -> None:
@@ -394,6 +409,14 @@ def status(args) -> None:
     if spotdb.has_table(main, "public.documents"):
         for kind, n, embedded in main.execute("SELECT kind, count(*), count(embedding) FROM documents GROUP BY 1 ORDER BY 1"):
             print("  documents.%-14s %5d (%d embedded)" % (kind, n, embedded))
+    if spotdb.has_table(main, "public.kg_nodes"):
+        n, embedded = main.execute("SELECT count(*), count(embedding) FROM kg_nodes").fetchone()
+        print("%-22s %6d (%d embedded)" % ("kg_nodes", n, embedded))
+        print("  " + ", ".join("%s %d" % r for r in main.execute(
+            "SELECT kind, count(*) FROM kg_nodes GROUP BY 1 ORDER BY 1")))
+        print("%-22s %6d" % ("kg_edges", main.execute("SELECT count(*) FROM kg_edges").fetchone()[0]))
+        print("  " + ", ".join("%s %d" % r for r in main.execute(
+            "SELECT rel, count(*) FROM kg_edges GROUP BY 1 ORDER BY 1")))
     main.close()
     logs = connect(logs_database_url(), autocommit=True)
     for t in ["raw.spot_event_log", "raw.kit_files", "raw.kit_rows", "raw.inspection_media", "app.model_calls",

@@ -152,10 +152,162 @@ COUNTS = [("GAUGE_READING", "WP07", "V1", "<=25", 9, 3), ("GAUGE_READING", "WP07
           ("GAUGE_READING", "WP07", "V2", "81+", 6, 6)]
 
 
+# ── knowledge graph (contract §7) ───────────────────────────────────────────────────────────────
+KG_NODES = {nid: {"node_id": nid, "kind": nid.split(":", 1)[0], "key": nid.split(":", 1)[1], "label": label,
+                  "summary": summary, "doc_id": doc}
+            for nid, label, summary, doc in [
+    ("action:A0136", "GAUGE_READING on HX-204", "Gauge reading A0136 on HX-204 at WP07, SUCCESS", None),
+    ("mission:M014", "Autowalk Inspection Route 14", "Mission M014, reported COMPLETED", None),
+    ("flag:1", "Gauge out of range on HX-204", "Flag 1, HIGH", None),
+    ("anomaly:AN002", "GAUGE_OUT_OF_RANGE HIGH on HX-204", "Gauge out of range HIGH on HX-204", "incident:AN002"),
+    ("asset:HX-204", "Heat Exchanger 04", "Heat Exchanger 04, HIGH criticality, at WP07", None),
+    ("asset:PUMP-205", "Pump 05", "Pump 05 at Turbine Hall South", None),
+    ("location:WP07", "Heat Exchanger Bay", "Heat Exchanger Bay, process zone, indoor dry", None),
+    ("location:WP09", "Turbine Hall South", "Turbine Hall South, turbine zone, high noise", None),
+    ("environment:INDOOR_DRY", "INDOOR_DRY", "Indoor dry environment", None),
+    ("environment:HIGH_NOISE", "HIGH_NOISE", "High noise environment near turbines", None),
+    ("action_type:GAUGE_READING", "GAUGE_READING", "Gauge reading actions", None),
+    ("action_type:NAVIGATION", "NAVIGATION", "Navigation actions between waypoints", None),
+    ("failure_type:LOCALIZATION_FAILURE", "LOCALIZATION_FAILURE", "Robot lost its position on the map", None),
+    ("anomaly_type:GAUGE_OUT_OF_RANGE", "GAUGE_OUT_OF_RANGE", "Gauge reading outside its safe band", None),
+    ("policy_rule:gauge_out_of_range", "Gauge out of range", "Rule: trusted reading above the safe band",
+     "policy:gauge_out_of_range"),
+    ("topic:gauge", "gauge", "Gauges and gauge reading", None),
+    ("topic:localization", "localization", "Localization, fiducials and getting lost in loud noisy areas", None),
+    ("manual:p30-2", "Autowalk gauge reading", "Autowalk gauge reading captures an image of the gauge; review "
+                                                "out of range readings by checking the captured image", "manual:p30-2"),
+    ("manual:p50-1", "Localization and fiducials", "Spot localizes with fiducials; add fiducials where it gets lost",
+     "manual:p50-1"),
+    ("operator_note:5", "Operator note on HX-204", "Pressure on HX-204 creeping up, scheduled maintenance", "note:5"),
+] + [("action:A1%03d" % i, "GAUGE_READING on HX-204", "Routine gauge reading", None) for i in range(30)]}
+# (src, rel, dst, weight, props, evidence)
+KG_EDGES = [
+    ("action:A0136", "part_of", "mission:M014", 1.0, {"source": "fk"}, None),
+    ("action:A0136", "at", "location:WP07", 1.0, {"source": "fk"}, None),
+    ("action:A0136", "inspects", "asset:HX-204", 1.0, {"source": "fk"}, None),
+    ("action:A0136", "of_type", "action_type:GAUGE_READING", 1.0, {"source": "fk"}, None),
+    ("anomaly:AN002", "during", "action:A0136", 1.0, {"source": "fk"}, "AN002"),
+    ("anomaly:AN002", "raised_on", "asset:HX-204", 1.0, {"source": "fk"}, "AN002"),
+    ("anomaly:AN002", "of_type", "anomaly_type:GAUGE_OUT_OF_RANGE", 1.0, {"source": "fk"}, "AN002"),
+    ("asset:HX-204", "located_at", "location:WP07", 1.0, {"source": "fk"}, None),
+    ("asset:PUMP-205", "located_at", "location:WP09", 1.0, {"source": "fk"}, None),
+    ("location:WP07", "has_environment", "environment:INDOOR_DRY", 1.0, {"source": "fk"}, None),
+    ("location:WP09", "has_environment", "environment:HIGH_NOISE", 1.0, {"source": "fk"}, None),
+    ("flag:1", "flags", "action:A0136", 1.0, {"source": "fk"}, None),
+    ("flag:1", "triggered", "policy_rule:gauge_out_of_range", 1.0, {"source": "fk"}, None),
+    ("anomaly_type:GAUGE_OUT_OF_RANGE", "common_at", "asset:HX-204", 0.5, {"n": 3, "rate": 0.5, "source": "stat"},
+     "stat:anomaly_type=GAUGE_OUT_OF_RANGE,asset_id=HX-204"),
+    ("failure_type:LOCALIZATION_FAILURE", "common_at", "location:WP09", 0.43, {"n": 6, "of": 14, "rate": 0.43, "source": "stat"},
+     None),
+    ("action_type:NAVIGATION", "fails_more_in", "environment:HIGH_NOISE", 0.64,
+     {"n": 14, "rate": 0.64, "overall": 0.81, "source": "stat"}, None),
+    ("action_type:GAUGE_READING", "fails_more_in", "environment:INDOOR_DRY", 0.7,
+     {"n": 10, "rate": 0.7, "overall_rate": 0.81, "source": "stat"}, None),
+    ("policy_rule:gauge_out_of_range", "about", "anomaly_type:GAUGE_OUT_OF_RANGE", 1.0, {"source": "curated"}, None),
+    ("policy_rule:gauge_out_of_range", "about", "topic:gauge", 1.0, {"source": "curated"}, None),
+    ("anomaly_type:GAUGE_OUT_OF_RANGE", "relates_to", "topic:gauge", 1.0, {"source": "curated"}, None),
+    ("action_type:GAUGE_READING", "relates_to", "topic:gauge", 1.0, {"source": "curated"}, None),
+    ("failure_type:LOCALIZATION_FAILURE", "relates_to", "topic:localization", 1.0, {"source": "curated"}, None),
+    ("manual:p30-2", "mentions", "topic:gauge", 3.0, {"source": "extract"}, "manual:p30-2"),
+    ("manual:p30-2", "mentions", "action_type:GAUGE_READING", 2.0, {"source": "extract"}, "manual:p30-2"),
+    ("manual:p50-1", "mentions", "topic:localization", 2.0, {"source": "extract"}, "manual:p50-1"),
+    ("operator_note:5", "mentions", "asset:HX-204", 1.0, {"source": "extract"}, "note:5"),
+] + [("action:A1%03d" % i, rel, dst, 1.0, {"source": "fk"}, None) for i in range(30)
+     for rel, dst in (("at", "location:WP07"), ("inspects", "asset:HX-204"))]
+for _n in KG_NODES.values():
+    _n["embedding"] = bow(_n["label"] + " " + _n["summary"])
+
+
+class GraphMissing(Exception):
+    """Mimics psycopg's UndefinedFunction on a DB without migration 009."""
+    sqlstate = "42883"
+
+
 class FakeRepo:
-    def __init__(self, hybrid_has_similarity: bool = False):
+    def __init__(self, hybrid_has_similarity: bool = False, graph: str = "ok"):
+        """graph: 'ok' | 'missing' (no migration 009) | 'broken' (traversal errors) | 'no_details' (lookup fails)."""
         self.hybrid_has_similarity = hybrid_has_similarity
+        self.graph = graph
         self.calls: List[str] = []
+        self.graph_calls: List[tuple] = []
+
+    def _graph_gate(self, name):
+        self.graph_calls.append((name,))
+        if self.graph == "missing":
+            from spot_mcp.repo import GraphUnavailable
+            try:
+                raise GraphMissing("function graph_neighborhood(text[], ...) does not exist")
+            except GraphMissing as exc:
+                raise GraphUnavailable("knowledge graph not available in this database (UndefinedFunction; "
+                                       "migration 009)") from exc
+        if self.graph == "broken" and name == "graph_neighborhood":
+            raise RuntimeError("statement timeout")
+
+    async def match_kg_nodes(self, vec, kinds, k, min_sim):
+        self._graph_gate("match_kg_nodes")
+        rows = []
+        for n in KG_NODES.values():
+            if kinds and n["kind"] not in kinds:
+                continue
+            sim = cos(vec, n["embedding"])
+            if sim >= min_sim:
+                rows.append({**{x: n[x] for x in ("node_id", "kind", "label", "summary", "doc_id")}, "similarity": sim})
+        return sorted(rows, key=lambda r: -r["similarity"])[:k]
+
+    async def match_kg_nodes_text(self, text, kinds, k):
+        self._graph_gate("match_kg_nodes_text")
+        norm = lambda s: re.sub(r"[^a-z0-9]+", "", s.lower())  # noqa: E731 - like the real function
+        q = norm(text)
+        rows = []
+        for n in KG_NODES.values():
+            if kinds and n["kind"] not in kinds:
+                continue
+            key, label = norm(n["key"]), norm(n["label"])
+            score = 1.0 if q and (q in (key, label) or text.strip().lower() == n["node_id"].lower()) else \
+                0.6 if q and (q in key or q in label or (len(key) >= 4 and key in q)) else 0.0
+            if score:
+                rows.append({**{x: n[x] for x in ("node_id", "kind", "label", "summary", "doc_id")}, "score": score})
+        return sorted(rows, key=lambda r: (-r["score"], r["node_id"]))[:k]
+
+    async def graph_neighborhood(self, seeds, hops, rels, kinds, max_nodes):
+        """Same semantics as db/migrations/009_graph.sql: simple paths over both edge directions; one row per reached
+        node (best = shortest, then heaviest); seeds only when reached from another seed; kind_filter filters the
+        RETURNED rows (the walk passes through any kind); order hop, weight desc, semantic kinds first; LIMIT last."""
+        self._graph_gate("graph_neighborhood")
+        self.graph_calls.append(("graph_neighborhood", tuple(seeds), hops, tuple(kinds or ()), max_nodes))
+        hops = min(hops, 3)
+        best: Dict[str, Dict[str, Any]] = {}
+        frontier = [(s, [s]) for s in seeds if s in KG_NODES]
+        for hop in range(1, hops + 1):
+            nxt = []
+            for node, path in frontier:
+                for src, rel, dst, w, props, ev in KG_EDGES:
+                    if node not in (src, dst):
+                        continue
+                    other = dst if node == src else src
+                    if other in path or (rels and rel not in rels):
+                        continue
+                    row = {**{x: KG_NODES[other][x] for x in ("node_id", "kind", "label", "summary", "doc_id")},
+                           "hop": hop, "via_rel": rel, "via_node": node, "path": path + [other], "weight": w,
+                           "evidence": ev}
+                    if other not in best or (best[other]["hop"], -best[other]["weight"]) > (hop, -w):
+                        best[other] = row
+                    nxt.append((other, path + [other]))
+            frontier = nxt
+        order = ["topic", "manual", "failure_type", "anomaly_type", "environment", "action_type", "policy_rule",
+                 "location", "asset", "operator_note", "explanation", "anomaly", "flag", "mission", "action"]
+        rows = [r for r in best.values() if not kinds or r["kind"] in kinds]
+        return sorted(rows, key=lambda r: (r["hop"], -r["weight"], order.index(r["kind"]), r["node_id"]))[:max_nodes]
+
+    async def kg_details(self, node_ids):
+        self._graph_gate("kg_details")
+        if self.graph == "no_details":
+            raise RuntimeError("permission denied for table kg_edges")
+        ids = set(node_ids)
+        return {"nodes": [{x: KG_NODES[n][x] for x in ("node_id", "kind", "label", "summary", "doc_id")}
+                          for n in ids if n in KG_NODES],
+                "edges": [{"src": s, "rel": r, "dst": d, "weight": w, "props": p, "evidence": ev}
+                          for s, r, d, w, p, ev in KG_EDGES if s in ids and d in ids]}
 
     async def flag(self, flag_id):
         self.calls.append("flag")

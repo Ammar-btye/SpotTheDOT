@@ -2,8 +2,9 @@
 
 The API stays a stub until SYSTEM2_LLAMA_URL is set (assessor_from_env returns None, so the stub path and its tests
 are untouched). When it is set, LiveAssessor runs the same run_pipeline the offline eval harness scores: at most
-two LlamaGenerator attempts inside one 15 s deadline, then the checked template (path 'fallback', model
-'template'), so the live endpoint can never return an unchecked model answer. Insufficient packets short-circuit
+two LlamaGenerator attempts inside one 15 s deadline (25 s, SYSTEM2_IMAGE_DEADLINE_S, for requests with an
+image), then the checked template (path 'fallback', model 'template'), so the live endpoint can never return an
+unchecked model answer. Insufficient packets short-circuit
 before any generation. to_response() maps an AssessmentRun to the flat BackendAssessResponse exactly the way
 evaluation._public does, so the numbers the backend logs to app.model_calls (model, latency_ms, tokens_per_sec)
 are the same fields the eval measured.
@@ -23,9 +24,11 @@ message here ever contains the X-API-Key. This module does not print.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import tempfile
@@ -42,8 +45,14 @@ from .pipeline import AssessmentRun, PipelineConfig, run_pipeline
 from .prompts import PROMPT_VERSION, prompt_identity
 
 DEADLINE_S = 15.0   # live-explain p95 target (PROJECT constraint); shared by both attempts
+IMAGE_DEADLINE_S = 25.0   # requests with image_b64 (SYSTEM2_IMAGE_DEADLINE_S); text-only resend inside it (A-6)
+IMAGE_DEADLINE_ENV = 'SYSTEM2_IMAGE_DEADLINE_S'
 URL_ENV, MODEL_ENV, CACHE_ENV = 'SYSTEM2_LLAMA_URL', 'SYSTEM2_MODEL', 'SYSTEM2_CACHE_DIR'
+LLAMA_KEY_ENV = 'SYSTEM2_LLAMA_API_KEY'   # Bearer key for a gateway in front of llama-server (never logged)
+VISION_MODEL_ENV = 'SYSTEM2_VISION_MODEL'   # model for requests with an image; default SYSTEM2_MODEL (backend.2)
+IMAGE_USED, IMAGE_TEXT_ONLY, IMAGE_NOT_USED = 'used', 'text_only', 'not_used'   # X-System2-Image values
 KEY_FIELDS = ('flag_id', 'packet_hash', 'model', 'prompt_ver')
+LOG = logging.getLogger('system2.live')
 
 
 def to_response(run: AssessmentRun, flag_id: int) -> BackendAssessResponse:
@@ -138,31 +147,49 @@ class LiveAssessor:
     """assess(body) -> (response, cache_status) through run_pipeline with `generator` (e.g. LlamaGenerator)."""
 
     def __init__(self, generator, model: str, config: Optional[PipelineConfig] = None,
-                 cache: Optional[ExplanationCache] = None):
+                 cache: Optional[ExplanationCache] = None, image_deadline_s: float = IMAGE_DEADLINE_S):
         self.generator, self.model, self.cache = generator, model, cache
+        self.vision_model = getattr(generator, 'vision_model', None) or model
         self.config = config if config is not None else PipelineConfig(deadline_s=DEADLINE_S, catalog=default_catalog())
+        self.image_config = replace(self.config, deadline_s=float(image_deadline_s))   # only requests with an image
         self.prompt_ver = prompt_version(generator)
 
     def __repr__(self):  # never shows a key: LlamaGenerator's repr is endpoint + model only
         return 'LiveAssessor(%r, model=%r)' % (self.generator, self.model)
 
     def key_fields(self, prepared: PreparedPacket) -> dict:
-        return {'flag_id': prepared.flag_id, 'packet_hash': packet_hash(prepared), 'model': self.model,
+        model = self.vision_model if prepared.image is not None else self.model
+        return {'flag_id': prepared.flag_id, 'packet_hash': packet_hash(prepared), 'model': model,
                 'prompt_ver': self.prompt_ver}
 
-    def assess_detail(self, body, refresh: bool = False) -> Tuple[BackendAssessResponse, str, bool]:
-        """(response, 'hit'|'miss'|'off', stored); ValueError for malformed consumed values before any generation."""
+    def assess_image(self, body, refresh: bool = False) -> Tuple[BackendAssessResponse, str, bool, Optional[str]]:
+        """(response, 'hit'|'miss'|'off', stored, image status or None when the request had no image)."""
         body = body if isinstance(body, BackendAssessRequest) else BackendAssessRequest.model_validate(body)
         prepared = normalize_packet(body)
+        has_image = prepared.image is not None
         key = self.key_fields(prepared) if self.cache is not None else None
         if key is not None and not refresh:
             cached = self.cache.get(key, prepared, self.config.catalog)
-            if cached is not None:
-                return cached, 'hit', True
-        response = to_response(run_pipeline(body, self.generator, self.config), prepared.flag_id)
+            if cached is not None:   # image requests only ever store answers that saw the image
+                return cached, 'hit', True, IMAGE_USED if has_image else None
+        run = run_pipeline(body, self.generator, self.image_config if has_image else self.config)
+        response = to_response(run, prepared.flag_id)
+        image = None
+        if has_image:
+            image = {True: IMAGE_USED, False: IMAGE_TEXT_ONLY}.get(run.image_used, IMAGE_NOT_USED)
+            if run.image_used is False:
+                LOG.warning('system2 flag_id=%d: image rejected by the model server; answered text-only '
+                            '(image_used=false)', prepared.flag_id)
         if key is None:
-            return response, 'off', False
-        return response, 'miss', self.cache.put(key, response)
+            return response, 'off', False, image
+        if has_image and run.image_used is not True:
+            return response, 'miss', False, image   # never cache a text-only answer under the image key
+        return response, 'miss', self.cache.put(key, response), image
+
+    def assess_detail(self, body, refresh: bool = False) -> Tuple[BackendAssessResponse, str, bool]:
+        """(response, 'hit'|'miss'|'off', stored); ValueError for malformed consumed values before any generation."""
+        response, status, stored, _ = self.assess_image(body, refresh)
+        return response, status, stored
 
     def assess(self, body, refresh: bool = False) -> Tuple[BackendAssessResponse, str]:
         response, status, _ = self.assess_detail(body, refresh)
@@ -175,14 +202,25 @@ def assessor_from_env(environ: Mapping[str, str] = os.environ) -> Optional[LiveA
     if not url:
         return None
     model = (environ.get(MODEL_ENV) or '').strip()
+    vision_model = (environ.get(VISION_MODEL_ENV) or '').strip() or None
+    raw_deadline = (environ.get(IMAGE_DEADLINE_ENV) or '').strip()
+    try:
+        image_deadline = float(raw_deadline) if raw_deadline else IMAGE_DEADLINE_S
+    except ValueError:
+        image_deadline = -1.0
+    if not 0 < image_deadline <= 120:
+        raise RuntimeError('%s must be a number of seconds in (0, 120], got %r' % (IMAGE_DEADLINE_ENV, raw_deadline))
     if not model:
         raise RuntimeError('%s is set but %s is empty; set the served model name (e.g. qwen3.5-9b-q4km)'
                            % (URL_ENV, MODEL_ENV))
     from .generation import LlamaGenerator   # deferred: stub mode never loads the few-shots
     cache_dir = cache_dir_from_env(environ)
     try:
-        generator = LlamaGenerator(url, model=model)
-        return LiveAssessor(generator, model, cache=ExplanationCache(cache_dir) if cache_dir is not None else None)
+        generator = LlamaGenerator(url, model=model, vision_model=vision_model,
+                                   api_key=(environ.get(LLAMA_KEY_ENV) or '').strip() or None,
+                                   image_timeout_s=image_deadline)
+        return LiveAssessor(generator, model, cache=ExplanationCache(cache_dir) if cache_dir is not None else None,
+                            image_deadline_s=image_deadline)
     except (ValueError, OSError) as exc:
         raise RuntimeError('live System 2 config unusable (%s %s): %s'
                            % (URL_ENV, endpoint(url), str(exc).splitlines()[0] if str(exc) else type(exc).__name__)

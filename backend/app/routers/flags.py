@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Body, Depends, Path, Query
 
 from ..deps import Services, current_request_id, get_services
-from ..schemas.flags import AckIn, AckOut, ContextPacket, Explanation, FlagDetail, FlagList
+from ..schemas.flags import AckIn, AckOut, ContextPacket, ExplainIn, Explanation, FlagDetail, FlagList
 
 router = APIRouter(prefix="/flags", tags=["flags"])
 FlagId = Path(..., ge=1, description="flags.flag_id")
@@ -48,12 +48,15 @@ async def context(flag_id: int = FlagId, svc: Services = Depends(get_services)) 
 @router.post("/{flag_id}/explain", response_model=Explanation, response_model_exclude_none=True)
 async def explain(flag_id: int = FlagId,
                   refresh: bool = Query(False, description="Regenerate even if an assessment is stored."),
+                  body: Optional[ExplainIn] = Body(None, description="Optional operator image (orchestrator only)."),
                   svc: Services = Depends(get_services)) -> dict:
     """Orbit-style explanation (question / answer / reasoning / recommended action) from System 2
     (`SYSTEM2_URL` /v1/assess, with the context packet). Stored in `assessments`; later calls return it unless
     `refresh=true`. If System 2 is unset or down: a templated explanation from the flag's reasons
-    (`source: template`)."""
-    return await svc.flags.explain(flag_id, current_request_id(), refresh=refresh)
+    (`source: template`). With `ORCHESTRATOR_URL` set, the LangGraph orchestrator is asked first (graph trace in
+    `orchestrator`); an optional `image_b64` is forwarded to it and bypasses the cache."""
+    image = body.model_dump(exclude_none=True) if body is not None and body.image_b64 else None
+    return await svc.flags.explain(flag_id, current_request_id(), refresh=refresh, image=image)
 
 
 @router.get("/{flag_id}/explain", response_model=Explanation, response_model_exclude_none=True)

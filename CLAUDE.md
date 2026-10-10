@@ -1,7 +1,7 @@
 # Knight Hacks project
 
-**Phase: research done (2026-10-09). Waiting on sponsor tracks.** Next step: at the opening ceremony, record every prompt verbatim in `research/knighthacks-ix-tracks.md`, then score ideas with the synthesis §4 scorecard.
-Current goal: learn what wins hackathons from past winners, so we can design a winning project once the tracks drop.
+**Phase: building (2026-10-10).** Project: SPOTlight, an operator console for NextEra's SPOT challenge (`research/decisions.md`).
+System map: `docs/ARCHITECTURE.md`. How to run it: `docs/RUNNING.md`. Current goal: finish the core loop (replay → triage → explain → act) and submit by Sun 10:00 AM.
 
 ## Event
 - **Knight Hacks IX**, Oct 9–11, 2026, in person in Orlando, FL (source: https://www.mlh.com/seasons/2027/events).
@@ -20,7 +20,8 @@ Current goal: learn what wins hackathons from past winners, so we can design a w
   the same change, plus the ports table in `docs/backend-services-contract.md`, the header comment listing services,
   and `docs/RUNNING.md`. Never add a second compose file; use profiles inside the unified one.
 - GPU services take a `TORCH_VARIANT` build arg (`cpu` | `rocm-gfx1151` | `rocm-gfx1201`). The AMD Radeon Cloud
-  Jupyter VMs have no root and can't run Docker, so there the same code runs natively in a venv.
+  Jupyter VMs have no root and can't run Docker, so there the same code runs natively in a venv. The SSH box
+  (`ssh spot-amd`) is a W7900D (gfx1100) with ROCm torch in `/opt/venv`; see `docs/AMD-GPU.md`.
 - Services talk over HTTP using the contracts in `docs/` (e.g. `docs/system2-rag-contract.md`); change the contract first.
 
 ## Context protocol
@@ -55,4 +56,6 @@ That file is the single source of truth for decisions.
 - `research/INDEX.md`: one line per research file. Start here.
 - `research/decisions.md`: what we've decided and why.
 - `research/synthesis-*.md`: cross-file patterns ("what wins"). Read this before brainstorming ideas.
-- `research/winners-*.md`: per-topic winner logs with source links.
+- `research/winners-*.md`: winner logs we still use for the pitch, judging and prizes.
+- `research/tech-*.md`: research behind the tech we built.
+- `docs/`: architecture, service contracts and runbooks. Change the contract before the code.

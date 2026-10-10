@@ -1,0 +1,7 @@
+# Cross-service contract test (tests/contract): the vision service's own pins plus what orchestrator.assess imports.
+# System 2's analyst package needs only fastapi/pydantic/httpx, which these already satisfy (amd/system2/requirements.txt).
+-r ../../amd/vision/requirements.txt
+langgraph==1.2.14
+langchain-core==1.6.9
+httpx==0.28.1
+pytest==9.1.1
