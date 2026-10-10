@@ -6,7 +6,8 @@ matters and what to do**: it takes one escalated flag plus a short context packe
 row in the packet.
 
 Plan and evidence: `research/tech-system2-context-distill-2026-10-10.md` (recommendations R1–R7).
-API contract with `web/`: `docs/ARCHITECTURE.md` §4 (`POST /v1/assess`).
+API contract with `web/`: `analyst/contract.py` (contract `2026-10-10.1`) is the source of truth. It supersedes
+`docs/ARCHITECTURE.md` §4, which is kept only as history.
 
 ## Build order
 1. **Context packet builder** (R1–R2): `flag → packet` JSON under ~1,500 tokens, key facts first, every row with a short
@@ -22,7 +23,120 @@ API contract with `web/`: `docs/ARCHITECTURE.md` §4 (`POST /v1/assess`).
 
 Prompt first. Fine-tuning is a gated stretch goal (R5), only if the pipeline works end to end.
 
+## Contract
+All models live in `analyst/contract.py` and reject unknown fields (an extra field gets a 422).
+
+| Model | What it is |
+|---|---|
+| `Flag` | One escalated System 1 flag: ids, `kind` (action or mission), `category`, `priority`, `escalate`, `reading_trust`, the validator `reasons`, optional `scores`. |
+| `ContextPacket` | The cited context System 2 builds for the flag: `event`, `facts`, `asset`, `waypoint`, `incidents` rows, `allowed_actions`, `missing` sections, and the `question`. |
+| `Explanation` | The answer: cited `evidence`, `answer`, `question`, `recommended_action`, `confidence`, `insufficient_context`. |
+| `Meta` | How the answer was made: `model`, `prompt_ver`, `path`, `latency_ms`, `tokens_per_sec`, `packet_hash`. |
+| `AssessRequest` | The request body of `POST /v1/assess`: just `{"flag": {...}}`. System 2 builds the packet itself. |
+| `AssessResponse` | The response: `contract_version`, `flag_id`, `explanation`, the `packet` it is grounded in, and `meta`. |
+
+Packet row IDs are a prefix letter plus a number (`E1`, `F3`, `I2`): `E` event, `F` derived facts, `S` asset,
+`W` waypoint, `I` similar incidents. Every evidence item cites one or more of these IDs, and the contract rejects a
+citation to a row that is not in the packet.
+
+`Explanation` fields always come in this order: `evidence`, `answer`, `question`, `recommended_action`, `confidence`,
+`insufficient_context`. The order is part of the contract (the model writes evidence before its answer), so never
+reorder fields. `confidence` is `low`, `med` or `high`. `meta.path` is `first_pass`, `retry`, `fallback` or
+`insufficient_context`.
+
+`recommended_action` must be one of the packet's `allowed_actions`, which come from this table. `monitor` and
+`manual_review` are always allowed; `mission_health` flags allow every action. When `insufficient_context` is true,
+the action is always `manual_review`.
+
+| Action | Meaning | Allowed for |
+|---|---|---|
+| `dispatch_technician` | Send a person to the asset now. | equipment, mission_health |
+| `schedule_maintenance` | Book a planned work order; not urgent. | equipment, data_quality, mission_health |
+| `reinspect_next_mission` | Add the waypoint to the next SPOT route. | all categories |
+| `verify_reading_manually` | Take the reading by hand; the robot's value is not trusted. | data_quality, mission_health |
+| `recharge_robot` | Dock and charge SPOT before further work. | robot_health, mission_health |
+| `check_robot_comms` | Inspect SPOT's radio/network link. | robot_health, mission_health |
+| `clear_route_obstruction` | Remove whatever blocks the path. | navigation, mission_health |
+| `relocalize_robot` | Re-run localization / fiducial check. | navigation, mission_health |
+| `monitor` | No action now; watch the trend. | all categories |
+| `manual_review` | A human must look; System 2 cannot tell. | all categories |
+
+Any change to the wire format bumps `CONTRACT_VERSION` in `analyst/contract.py`, and the JSON Schemas are then
+re-exported with `python scripts/export_schema.py`.
+
+## Fixtures
+Each file in `fixtures/` holds a `request` and the `response` System 2 should give. Every one is built from real kit
+data from training missions only, and every number in its explanation appears in its packet.
+
+| File | Kit event | Category | `meta.path` it shows |
+|---|---|---|---|
+| `fixtures/equipment.json` | `act-A0009` (mission M001): failed visual inspection of Heat Exchanger 08 | equipment | `first_pass` |
+| `fixtures/robot_health.json` | `act-A0010` (M001): inspection run at 15% battery | robot_health | `retry` |
+| `fixtures/navigation.json` | `act-A0037` (M004): localization issue at WP06 | navigation | `first_pass` |
+| `fixtures/data_quality.json` | `act-A0030` (M003): sensor timeout, questionable reading | data_quality | `fallback` (templated explanation) |
+| `fixtures/mission_health.json` | `mis-M001`: mission reported COMPLETED with 2 of 10 actions failed | mission_health | `first_pass` |
+| `fixtures/insufficient_context.json` | `act-A9999`: an action the data source cannot resolve | data_quality | `insufficient_context` |
+
+The stub answers each request with the matching fixture's response, stamped with the caller's flag and
+`meta.model = "stub"` (so stub output can never pass for model output). It keeps the fixture's `meta.path`, so web can
+render every UI state. A request whose `flag_id` matches a fixture gets that fixture; otherwise it gets its category's
+fixture.
+
+## Run the stub
+Setup on the AMD box, from `amd/system2`:
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+```
+
+Start it, from `amd/system2` (one command; the key must be at least 16 characters and is never logged):
+
+```bash
+AMD_API_KEY=your-shared-secret uv run --no-project --with-requirements requirements.txt python scripts/serve.py
+```
+
+With the venv instead of uv: `AMD_API_KEY=your-shared-secret .venv/bin/python scripts/serve.py`. Flags: `--port`
+(default 8000), `--host` (default `127.0.0.1`), `--fixtures`, `--log-level`. Without a valid key the script exits with
+code 2 before binding any port.
+
+Call it:
+
+```bash
+python3 -c "import json; print(json.dumps(json.load(open('fixtures/equipment.json'))['request']))" > /tmp/req.json
+curl -s -X POST http://127.0.0.1:8000/v1/assess \
+  -H "X-API-Key: $AMD_API_KEY" -H "Content-Type: application/json" --data @/tmp/req.json
+```
+
+| Endpoint | Auth | Returns |
+|---|---|---|
+| `GET /health` | open | `{"status": "ok", "mode": "stub", "contract_version": ..., "fixtures": 6}` |
+| `POST /v1/assess` | `X-API-Key` header | an `AssessResponse` |
+
+Status codes for `POST /v1/assess`:
+- **200**: a schema-valid `AssessResponse`.
+- **401**: missing or wrong `X-API-Key`. The key is checked before the body is validated.
+- **422**: malformed flag (wrong type, unknown field, broken kind/category rule).
+- **501**: no fixture covers the flag's category.
+
+The server binds `127.0.0.1` and never a public interface by default (it warns if you pass a non-loopback `--host`).
+To reach it from a laptop, open an SSH tunnel to the box: `ssh -L 8000:127.0.0.1:8000 <user>@<amd-box>`, then call
+`http://127.0.0.1:8000` locally.
+
+## Tests and schemas
+From `amd/system2`:
+
+```bash
+uv run --no-project --with-requirements requirements.txt python -m pytest -q
+python scripts/export_schema.py            # regenerate schema/*.json after a contract change
+python scripts/export_schema.py --check    # exit 1 if a committed schema no longer matches the contract
+```
+
+`schema/` holds the generated JSON Schemas for web type generation: `flag.schema.json`, `packet.schema.json`,
+`assess_request.schema.json` and `assess_response.schema.json`. Do not edit them by hand.
+
 ## Interface with System 1 (to agree with Tyler)
-The fields System 2 receives from Laya / the validator, e.g. `escalate`, `priority`, `category`, `reading_trust`,
-their probabilities, and the validator rules that fired. Until that's fixed, the packet builder fakes them from the
-kit's severity and the policy in `amd/system1/triage/policy.py`.
+The `Flag` model in `analyst/contract.py` is now the agreed shape for System 1 to conform to: `escalate`, `priority`,
+`category`, `reading_trust`, their probabilities in `scores`, and the validator rules that fired in `reasons`.
+Action-level flags use `kind` "action" with one of the four action categories. Mission-level flags use `kind`
+"mission" with `category` "mission_health". Until System 1 emits flags, the packet builder fakes them from the kit's
+severity and the policy in `amd/system1/triage/policy.py` (with `source` "policy").
