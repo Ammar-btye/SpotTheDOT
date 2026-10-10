@@ -12,6 +12,8 @@ LlamaGenerator(url) implements the pipeline generator protocol over llama-server
 /v1/chat/completions: thinking off, temperature 0, max_tokens 350. Every transport or envelope problem (HTTP
 status, timeout, oversized body, non-JSON, NaN/Infinity, wrong types, fewer than three few-shots) raises
 GenerationError, so run_pipeline counts it as an attempt and retries once or falls back to the checked template.
+The time budget covers the whole call: a socket timeout only bounds each recv, so a watchdog shuts the socket at
+the deadline and a server or tunnel that trickles headers or body cannot hold the call open past it.
 The completion text itself is judged only by run_pipeline: finish_reason 'length' is truncation even when the
 text parses, and token counts are recorded as metadata, never used to infer validity. The recorded SRV-00 smoke
 needed 439 output tokens; the budget stays at 350 and long replies fall back rather than being assumed valid.
@@ -22,11 +24,11 @@ from __future__ import annotations
 import http.client
 import json
 import math
+import socket
+import threading
 import time
 from typing import List, Literal, Optional, Sequence
-import urllib.error
 import urllib.parse
-import urllib.request
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_validator
 
@@ -193,10 +195,12 @@ class LlamaGenerator:
         if type(max_tokens) is not int or max_tokens <= 0:
             raise ValueError('max_tokens must be a positive integer')
         self.endpoint = url.rstrip('/') + '/v1/chat/completions'
+        # http.client directly (no environment proxies): the call owns its socket, so the deadline can close it
+        self._https, self._host, self._port = parts.scheme == 'https', parts.hostname, parts.port
+        self._target = parts.path.rstrip('/') + '/v1/chat/completions'
         self.model, self.max_tokens, self.timeout_s = model, max_tokens, float(timeout_s)
         self.max_response_bytes, self._api_key = max_response_bytes, api_key
         self.examples = tuple(examples) if examples is not None else load_examples()
-        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # loopback/tunnel only
 
     def __repr__(self):  # never shows the key
         return 'LlamaGenerator(%r, model=%r)' % (self.endpoint, self.model)
@@ -224,28 +228,54 @@ class LlamaGenerator:
         return parse_envelope(self._post(body, headers, budget), self.model)
 
     def _post(self, body: bytes, headers: dict, budget: float) -> bytes:
+        """POST and read the whole body within `budget` s; the watchdog shuts the socket at the deadline."""
         deadline = time.monotonic() + budget
-        req = urllib.request.Request(self.endpoint, data=body, headers=headers, method='POST')
+        cls = http.client.HTTPSConnection if self._https else http.client.HTTPConnection
+        conn = cls(self._host, self._port, timeout=budget)    # bounds connect; the watchdog bounds the rest
+        expired, timer = threading.Event(), None
+        late = 'response not complete within %.1f s' % budget
         try:
-            with self._opener.open(req, timeout=budget) as resp:
-                chunks, size = [], 0
-                while True:
-                    if time.monotonic() > deadline:
-                        raise GenerationError('timeout', 'response not complete within %.1f s' % budget)
-                    chunk = resp.read(CHUNK)
-                    if not chunk:
-                        break
-                    size += len(chunk)
-                    if size > self.max_response_bytes:
-                        raise GenerationError('oversized', 'response over %d bytes' % self.max_response_bytes)
-                    chunks.append(chunk)
-                return b''.join(chunks)
-        except urllib.error.HTTPError as exc:
-            raise GenerationError('http', 'status %d' % exc.code) from None
-        except urllib.error.URLError as exc:
-            kind = 'timeout' if isinstance(exc.reason, TimeoutError) else 'transport'
-            raise GenerationError(kind, type(exc.reason).__name__) from None
+            conn.connect()
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise GenerationError('timeout', late)
+            timer = threading.Timer(left, _expire, (conn.sock, expired))
+            timer.daemon = True
+            timer.start()
+            conn.request('POST', self._target, body=body, headers=dict(headers, Connection='close'))
+            resp = conn.getresponse()
+            if not 200 <= resp.status < 300:
+                raise GenerationError('http', 'status %d' % resp.status)
+            chunks, size = [], 0
+            while True:
+                if expired.is_set() or time.monotonic() > deadline:
+                    raise GenerationError('timeout', late)
+                chunk = resp.read(CHUNK)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > self.max_response_bytes:
+                    raise GenerationError('oversized', 'response over %d bytes' % self.max_response_bytes)
+                chunks.append(chunk)
+            if expired.is_set():          # EOF caused by the watchdog is a timeout, not a complete body
+                raise GenerationError('timeout', late)
+            return b''.join(chunks)
         except TimeoutError:
             raise GenerationError('timeout', 'no response within %.1f s' % budget) from None
         except (OSError, http.client.HTTPException) as exc:
+            if expired.is_set():
+                raise GenerationError('timeout', late) from None
             raise GenerationError('transport', type(exc).__name__) from None
+        finally:
+            if timer is not None:
+                timer.cancel()
+            conn.close()
+
+
+def _expire(sock, expired: threading.Event) -> None:
+    """Watchdog: flag the deadline, then shut the socket so any blocked send/recv returns at once."""
+    expired.set()
+    try:
+        socket.socket.shutdown(sock, socket.SHUT_RDWR)   # base method: also safe for an SSL socket mid-read
+    except OSError:
+        pass

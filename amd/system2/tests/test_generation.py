@@ -399,6 +399,52 @@ def test_transport_timeout_is_bounded_and_falls_back(server):
     assert run.path == 'fallback' and run.attempts[0].status == 'timeout'
 
 
+@pytest.mark.parametrize('phase', ['body', 'headers'])
+def test_trickling_server_cannot_stretch_the_time_budget(phase):
+    """A peer sending one byte every 0.2 s keeps each recv alive; the whole call must still end at the budget."""
+    g = gen()
+    stop = threading.Event()
+
+    class Trickle(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers['Content-Length']))
+            head = b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100000\r\n\r\n'
+            data = head if phase == 'headers' else b''
+            try:
+                if phase == 'body':
+                    self.wfile.write(head)
+                    self.wfile.flush()
+                    data = b'{' + b' ' * 99999
+                for i in range(len(data)):
+                    if stop.is_set():
+                        return
+                    self.wfile.write(data[i:i + 1])
+                    self.wfile.flush()
+                    time.sleep(0.2)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def log_message(self, *args):
+            pass
+
+    http = ThreadingHTTPServer(('127.0.0.1', 0), Trickle)
+    http.daemon_threads = True
+    worker = threading.Thread(target=http.serve_forever, kwargs={'poll_interval': 0.02}, daemon=True)
+    worker.start()
+    try:
+        generator = g.LlamaGenerator('http://127.0.0.1:%d' % http.server_port, timeout_s=1.0)
+        t0 = time.monotonic()
+        with pytest.raises(g.GenerationError) as err:
+            generator(case('kit-equipment').prepared, ())
+        assert time.monotonic() - t0 < 2.0
+        assert err.value.kind == 'timeout'
+    finally:
+        stop.set()
+        http.shutdown()
+        http.server_close()
+        worker.join()
+
+
 def test_metadata_absent_or_invalid_speed_is_null(server):
     g = gen()
     http, url = server
