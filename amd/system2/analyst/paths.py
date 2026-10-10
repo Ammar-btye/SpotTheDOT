@@ -31,3 +31,14 @@ def kit_dir() -> Path:
     if root is None:
         raise ValueError('kit location unknown outside the repository: set SPOT_KIT_DIR')
     return root / 'amd' / 'system1' / 'data' / 'kit'
+
+
+def display(path: Path) -> str:
+    """Repo-relative POSIX path inside the checkout (stable across machines), else the absolute path."""
+    resolved, root = Path(path).resolve(), repo_root()
+    if root is not None:
+        try:
+            return resolved.relative_to(root.resolve()).as_posix()
+        except ValueError:
+            pass
+    return str(resolved)

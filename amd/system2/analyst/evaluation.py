@@ -21,8 +21,9 @@ Latency quantiles use the nearest-rank method on per-case latency in millisecond
 
 The approved dataset holds development kit packets from training missions only (synthetic kit data, few-shots from
 the same pool with the current case excluded), so scope.headline_eligible is always false. Measured timings vary
-between runs; identity (dataset, selection, config, prompt, code revision) and outcomes from a deterministic runner
-do not. No model or GPU is touched here; measurements are whatever endpoint the caller points the model runner at.
+between runs; identity (dataset, selection, config, prompt, entity catalog source and hash, code revision) and
+outcomes from a deterministic runner do not. No model or GPU is touched here; measurements are whatever endpoint
+the caller points the model runner at.
 """
 from __future__ import annotations
 
@@ -46,7 +47,7 @@ from pydantic import ValidationError
 
 from .backend_contract import BackendAction, BackendAssessRequest, BackendAssessResponse
 from .dataset import SavedCase, content_hash, validate_dataset
-from .grounding import check_assessment, default_catalog
+from .grounding import EntityCatalog, check_assessment, default_catalog
 from .packet import PreparedPacket, normalize_packet
 from .paths import repo_root
 from .pipeline import AssessmentRun, PipelineConfig, _template, run_pipeline
@@ -189,6 +190,12 @@ def code_revision() -> dict:
     except (OSError, subprocess.SubprocessError):
         return {'revision': None, 'dirty': None}
     return {'revision': revision or None, 'dirty': dirty}
+
+
+def catalog_identity(catalog: EntityCatalog) -> dict:
+    """Kit source and content hash of the entity catalog the checker grounds names against."""
+    entities = [[e.kind, e.key, list(e.aliases)] for e in catalog.entities]
+    return {'source': catalog.source, 'entity_count': len(entities), 'content_hash': content_hash(entities)}
 
 
 def utc_now() -> str:
@@ -432,6 +439,7 @@ def run_evaluation(dataset: EvalDataset, runners: Sequence, config: EvalConfig) 
         'runners': [r.name for r in runners],
         'config': config.identity(),
         'prompt': _prompt_identity(result['records']),
+        'catalog': catalog_identity(default_catalog()),   # kit edits change name checks; code_revision misses them
         'code': code_revision(),
     }
     identity['identity_hash'] = content_hash(identity)

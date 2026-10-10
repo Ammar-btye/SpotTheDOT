@@ -493,6 +493,25 @@ def test_model_runner_without_url_is_a_usage_error(tmp_path):
     assert r.returncode == 2 and not (tmp_path / 'out').exists()
 
 
+def test_identity_records_entity_catalog_source_and_hash(tmp_path):
+    """Kit alias edits change name checks, so they must change the run identity (code_revision misses them)."""
+    import shutil
+    from analyst import evaluation as ev
+    from analyst.grounding import load_entity_catalog
+    run = ev.run_evaluation(ev.load_eval_dataset(DATA), [ev.TemplateRunner()], ev.EvalConfig(limit=1))
+    cat = run['identity']['catalog']
+    assert cat['source'] == 'amd/system1/data/kit' and cat['entity_count'] > 0 and len(cat['content_hash']) == 64
+    kit = tmp_path / 'kit'
+    shutil.copytree(ROOT / 'amd/system1/data/kit', kit)
+    assets = kit / 'assets.csv'
+    lines = assets.read_text(encoding='utf-8').splitlines(keepends=True)
+    head, first = lines[0].rstrip('\n').split(','), lines[1].split(',')
+    first[head.index('asset_name')] = 'Renamed Pump'
+    assets.write_text(lines[0] + ','.join(first) + ''.join(lines[2:]), encoding='utf-8')
+    edited = ev.catalog_identity(load_entity_catalog(kit))
+    assert edited['content_hash'] != cat['content_hash'] and edited['source'] == str(kit.resolve())
+
+
 def test_out_of_bounds_model_output_is_not_schema_valid_or_accepted():
     """Strict generation bounds count in the harness: 6 duplicate claims are a schema failure, never model success."""
     from analyst import evaluation as ev

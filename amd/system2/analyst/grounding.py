@@ -32,7 +32,7 @@ from typing import Iterable, List, Optional, Tuple
 import unicodedata
 
 from .packet import PreparedPacket
-from .paths import kit_dir  # noqa: F401  (re-exported; SPOT_KIT_DIR or the checked-in kit)
+from .paths import display, kit_dir  # kit_dir: SPOT_KIT_DIR or the checked-in kit (shared with analyst.dataset)
 
 GENERATION_FIELDS = ('evidence', 'answer', 'question', 'recommended_action', 'confidence', 'insufficient_context')
 CONFIDENCE = ('high', 'medium', 'low')
@@ -51,6 +51,7 @@ class Entity:
 @dataclass(frozen=True)
 class EntityCatalog:
     entities: Tuple[Entity, ...]
+    source: Optional[str] = None   # kit directory the catalog was read from (display form), for run identity
 
 
 def _entity(kind, key, name) -> Entity:
@@ -81,7 +82,7 @@ def load_entity_catalog(kit: Optional[Path] = None, extra: Iterable[dict] = ()) 
         e = _entity(m.get('kind'), m.get('id'), m.get('name'))
         old = found.get((e.kind, e.key))
         found[(e.kind, e.key)] = Entity(e.kind, e.key, tuple(dict.fromkeys((old.aliases if old else ()) + e.aliases)))
-    return EntityCatalog(tuple(found[k] for k in sorted(found)))
+    return EntityCatalog(tuple(found[k] for k in sorted(found)), display(kit))
 
 
 @lru_cache(maxsize=1)
