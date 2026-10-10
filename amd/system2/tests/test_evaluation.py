@@ -464,6 +464,30 @@ def test_atomic_output_and_failed_run_keeps_previous_artifact(tmp_path):
     assert {p.name: p.read_bytes() for p in out.iterdir()} == before   # nothing replaced, no temp files left
 
 
+@pytest.mark.parametrize('failing', ['cases.jsonl', 'report.md', 'metrics.json'])
+def test_partial_write_never_leaves_stale_metrics_beside_new_artifacts(tmp_path, monkeypatch, failing):
+    """metrics.json present => cases.jsonl and report.md are from the same completed run."""
+    from analyst import evaluation as ev
+    out = tmp_path / 'out'
+    dataset = ev.load_eval_dataset(DATA)
+    run1 = ev.run_evaluation(dataset, [ev.TemplateRunner()], ev.EvalConfig(label='run1'))
+    ev.write_artifacts(out, run1)
+    assert metrics(out)['measurement']['label'] == 'run1'
+    run2 = ev.run_evaluation(dataset, [ev.TemplateRunner()], ev.EvalConfig(label='run2', limit=2))
+    real = ev.os.replace
+
+    def flaky(src, dst):
+        if Path(dst).name == failing:
+            raise OSError(28, 'No space left on device')
+        return real(src, dst)
+
+    monkeypatch.setattr(ev.os, 'replace', flaky)
+    with pytest.raises(OSError):
+        ev.write_artifacts(out, run2)
+    assert not (out / 'metrics.json').exists()
+    assert not [p for p in out.iterdir() if p.name.endswith('.tmp')]
+
+
 def test_model_runner_without_url_is_a_usage_error(tmp_path):
     r = evaluate('--runner', 'model', '--model', 'qwen-fake', '--out-dir', str(tmp_path / 'out'))
     assert r.returncode == 2 and not (tmp_path / 'out').exists()

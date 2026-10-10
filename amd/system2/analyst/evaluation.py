@@ -482,7 +482,11 @@ def report(metrics: dict) -> str:
 
 
 def write_artifacts(out_dir: Path, metrics: dict) -> None:
-    """Serialize everything first, then atomically replace cases.jsonl, report.md and (last) metrics.json."""
+    """Serialize everything first, then atomically replace cases.jsonl, report.md and (last) metrics.json.
+
+    Any previous metrics.json is removed before the first replacement, so its presence always means all three files
+    come from the same completed run, even when a later write fails (disk full, permissions).
+    """
     records = metrics['records']
     summary = {k: v for k, v in metrics.items() if k != 'records'}
     payloads = [
@@ -492,6 +496,7 @@ def write_artifacts(out_dir: Path, metrics: dict) -> None:
         ('metrics.json', (json.dumps(summary, ensure_ascii=False, indent=2, allow_nan=False) + '\n').encode('utf-8')),
     ]
     out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / 'metrics.json').unlink(missing_ok=True)
     for name, data in payloads:
         temporary = None
         try:
