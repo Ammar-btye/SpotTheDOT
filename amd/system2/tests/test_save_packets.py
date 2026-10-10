@@ -87,6 +87,20 @@ def test_safe_lineage_allows_stripping_transport_diagnostics(tmp_path):
     assert output.read_bytes() == before
 
 
+@pytest.mark.parametrize('key', ['explanations', 'prior_answers', 'previous_output'])
+@pytest.mark.parametrize('empty', [[], {}, None, ''])
+def test_empty_forbidden_diagnostics_are_dropped_not_rejected(tmp_path, key, empty):
+    """A backend that always sends an empty diagnostics list must not make every capture fail import."""
+    capture = json.loads(DATA.read_text())
+    capture.pop('manifest')
+    capture['cases'][0]['request']['context'][key] = empty
+    source, output = tmp_path / 'source.json', tmp_path / 'approved.json'
+    source.write_text(json.dumps(capture))
+    result = run('--input', source, '--output', output)
+    assert result.returncode == 0, result.stderr
+    assert output.read_bytes() == DATA.read_bytes()   # same approved packets, same hash
+
+
 def test_no_holdout_override_and_seed_import_exclusive(tmp_path):
     assert run('--seed', '--output', tmp_path / 'x', '--holdout-fold', '0').returncode != 0
     assert run('--seed', '--input', DATA, '--output', tmp_path / 'x').returncode != 0

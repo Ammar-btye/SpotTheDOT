@@ -27,12 +27,15 @@ def approve_import(value):
         request = case['request']
         context = request.get('context')
         if isinstance(context, dict):
-            for key in ('explanations', 'prior_answers', 'previous_output', 'system1'):
+            # Forbidden diagnostics are rejected by key name whatever their value, so drop them even when empty.
+            for key in ('explanations', 'prior_answers', 'previous_output'):
                 if key in context:
-                    # Empty sections already approved must not change the hash.
-                    if context[key]:
-                        context.pop(key)
-                        changed = True
+                    context.pop(key)
+                    changed = True
+            # system1 is a real evidence section: an empty one already approved must not change the hash.
+            if context.get('system1'):
+                context.pop('system1')
+                changed = True
         flag = request.get('flag')
         if isinstance(flag, dict):
             for key in ('labels', 'explanation', 'previous_output'):
