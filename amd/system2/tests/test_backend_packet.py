@@ -1,6 +1,5 @@
 """Packet normalization, pre-generation guards, and packet-scoped post-checks."""
 import copy
-import importlib.util
 import sys
 from pathlib import Path
 from unittest.mock import Mock
@@ -22,7 +21,7 @@ def prepared(context):
 
 @pytest.mark.parametrize("change", [
     {"missing": ["asset unavailable"]}, {"gaps": ["search failed"]}, {"insufficient_context": True},
-    {"citation_ids": ["absent"]}, {"allowed_actions": []},
+    {"citation_ids": ["absent"]}, {"allowed_actions": [], "suggested_action": None},
     {"facts": [], "manual": [], "policy": [], "event": {}},
     {"facts": [{"id": "F1", "title": "Only a title"}], "manual": [], "policy": [], "event": {}},
     {"manual": [{"id": "manual:cool", "text": "  "}]},
@@ -44,6 +43,7 @@ def test_recursive_mission_and_all_document_sections(actions):
     context = {"allowed_actions": actions, "missing": [], "gaps": [],
                "event": {"mission": {"id": "mission:M7", "reported_status": "COMPLETED",
                                       "true_health": {"true_health_pct": 61.5},
+                                      "failure_types": {"PATH_BLOCKED": 2},
                                       "actions": [{"id": "action:A7", "status": "FAILED"}]}},
                "flag": {"id": "flag:42", "title": "Title only", "category": "equipment"},
                "system1": [{"id": "s1:1", "q": "escalate", "answer": "A", "p": .9}],
@@ -99,6 +99,23 @@ def test_identical_duplicates_are_safe():
     assert not prepared(ctx).insufficient_context
 
 
+@pytest.mark.parametrize("context", [{}, {"allowed_actions": ["MONITOR"]},
+    {"allowed_actions": ["MONITOR"], "event": {"id": "action:A", "title": "Title",
+                                                 "source": "mcp", "citation_ids": ["action:A"]}},
+    {"facts": [{"id": "F1", "text": "Real fact"}]}])
+def test_absent_actions_or_substantive_evidence_is_insufficient(context):
+    spy = Mock()
+    assert assess_prepared_packet(prepared(context), spy).insufficient_context
+    spy.assert_not_called()
+
+
+def test_output_instance_is_revalidated():
+    packet = prepared(request_body()["context"])
+    invalid = stub_assessment(packet).model_copy(update={"latency_ms": -1})
+    with pytest.raises(ValidationError):
+        assess_prepared_packet(packet, lambda _: invalid)
+
+
 def test_output_postchecks():
     packet = prepared(request_body()["context"])
     out = stub_assessment(packet).model_dump(mode="json")
@@ -117,7 +134,7 @@ def test_action_vocabulary_matches_mcp_without_runtime_import():
     import ast
     source = Path(__file__).resolve().parents[3] / "amd/mcp/spot_mcp/domain.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
-    assignment = next(n for n in tree.body if isinstance(n, ast.Assign)
-                      and any(isinstance(t, ast.Name) and t.id == "ALLOWED_ACTIONS" for t in n.targets))
+    assignment = next(n for n in tree.body if isinstance(n, ast.AnnAssign)
+                      and isinstance(n.target, ast.Name) and n.target.id == "ALLOWED_ACTIONS")
     actions = ast.literal_eval(assignment.value)
     assert {v.value for v in BackendAction} - {"MANUAL_REVIEW"} == {a for group in actions.values() for a in group}

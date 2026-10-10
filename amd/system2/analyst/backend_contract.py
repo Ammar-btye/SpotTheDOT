@@ -40,13 +40,13 @@ class BackendAssessRequest(BaseModel):
 
 
 class BackendEvidence(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
+    model_config = ConfigDict(extra="forbid", strict=True, revalidate_instances="always")
     claim: str = Field(min_length=1)
     ids: list[str] = Field(min_length=1)
 
 
 class BackendAssessResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False, revalidate_instances="always")
     evidence: list[BackendEvidence]
     answer: str = Field(min_length=1)
     question: str
