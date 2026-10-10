@@ -276,7 +276,9 @@ def test_unusable_model_reply_is_a_failed_raw_attempt(server, tmp_path, mode, st
     for key in ('parsed', 'schema_valid', 'citation_valid', 'numeric_consistent', 'name_consistent', 'accepted'):
         assert m['first_attempt'][key] == rate(0, 5)
     assert m['generation']['fallback'] == rate(5, 5) and m['public_response_valid'] == rate(6, 6)
-    assert m['tokens']['tokens_per_sec_mean'] == {'value': None, 'n': 0}
+    # A transport failure carries no usage; an unparseable completion still reports the server's own throughput.
+    speed = {'value': None, 'n': 0} if status == 'transport_error' else {'value': 35.6, 'n': 10}
+    assert m['tokens']['tokens_per_sec_mean'] == speed
 
 
 def test_slow_model_times_out_then_safe_fallback(server, tmp_path):
