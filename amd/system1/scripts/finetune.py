@@ -8,8 +8,10 @@ Training runs in triage/trainer.py: Laya's own batches and losses (pinned laya==
 layer-wise LR decay, optional LoRA (Hugging Face PEFT), class rebalancing, early stopping and a time
 budget. Checkpoints load with `laya.load(<dir>)` (LoRA is merged in). What this script adds:
 - after EVERY epoch: refit calibration temperatures on data/calib.jsonl (held-out synthetic missions,
-  not a random item split), then run the whole benchmark (data/benchmark.jsonl) and save it to
-  <out>/epoch_NN/ (report.md, metrics.json, predictions.jsonl);
+  not a random item split), fit per-question decision thresholds for the yes/no questions on the same
+  missions, log the calibration cross-entropy (unsmoothed, so comparable across runs, unlike train loss),
+  then run the whole benchmark (data/benchmark.jsonl) and save it to <out>/epoch_NN/ (report.md,
+  metrics.json, predictions.jsonl);
 - the best epoch (by --select-metric) is saved to <out>/best/, the last one to <out>/final/;
 - <out>/training_report.md tracks every metric across epochs (epoch 00 = the untuned model).
 
@@ -32,14 +34,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from laya.calibrate import fit_temperature_map                                   # noqa: E402
 from laya.common import uses_parallel_layout                                     # noqa: E402
-from laya.train import (items_from_rows, load_checkpoint,                       # noqa: E402
-                        prior_collapse_message, resolve_device)
+from laya.train import load_checkpoint, prior_collapse_message, resolve_device  # noqa: E402
 
 from scripts.benchmark import read_jsonl, run_benchmark, stratified_limit        # noqa: E402
-from triage.harness import LayaRunner                                            # noqa: E402
+from triage.metrics import score as question_scores                              # noqa: E402
+from triage.harness import LayaRunner, fit_thresholds                            # noqa: E402
 from triage.questions import POSITIVE, QUESTIONS                                 # noqa: E402
 from triage.trainer import (LoopConfig, apply_lora, items_with_qids,             # noqa: E402
                             oversample_positives, save_laya, train_loop)
+import numpy as np                                                               # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 MIN_UPDATES = 350
@@ -57,36 +60,60 @@ def summarize(rep: dict) -> dict:
     s["overall"] = {"mean_macro_f1": rep["overall"]["_all"]["mean_question_macro_f1"],
                     "decision_accuracy": rep["overall"]["_all"]["decision_accuracy"],
                     "ece": {q: v.get("ece") for q, v in rep["overall"].items() if q != "_all"}}
+    if rep.get("argmax"):   # the same answers without decision thresholds (comparable with older runs)
+        s["argmax"] = {seg: {"mean_macro_f1": m["_all"]["mean_question_macro_f1"],
+                             **{q: {"macro_f1": v["macro_f1"], "recall": v.get("recall")} for q, v in m.items()
+                                if q != "_all"}}
+                       for seg, m in rep["argmax"]["by_segment"].items()}
+        s["decision_thresholds"] = rep["decision_thresholds"]
     return s
 
 
 def select(summary: dict, metric: str) -> float:
+    if metric == "calib-ce":       # lower is better; calibration missions, not the benchmark
+        return -summary.get("calib", {}).get("ce", float("inf"))
     if metric == "overall":
         return summary["overall"]["mean_macro_f1"]
     return summary.get(metric, {}).get("mean_macro_f1", float("nan"))
 
 
 def strategy_line(args) -> str:
-    parts = ["LoRA r=%d alpha=%d on %s" % (args.lora_r, args.lora_alpha, args.lora_targets) if args.lora
-             else ("frozen encoder" if args.freeze_encoder else "full fine-tune"),
-             "enc lr %g, head lr %g" % (args.encoder_lr, args.head_lr), "warmup %g" % args.warmup_ratio,
-             "%s schedule" % args.schedule, "llrd %g" % args.llrd, "loss %s" % args.loss,
-             "label smoothing %g" % args.label_smoothing]
+    if args.lora:
+        lora = "LoRA r=%d alpha=%d dropout %g on %s, lora lr %g" % (
+            args.lora_r, args.lora_alpha, args.lora_dropout, args.lora_targets, args.lora_lr)
+        if args.loraplus_ratio != 1:
+            lora += ", LoRA+ x%g" % args.loraplus_ratio
+        if args.lora_init != "default":
+            lora += ", init %s" % args.lora_init
+        lora += ", norms %s (lr %g, llrd %g)" % ("trained" if not args.no_lora_norms else "frozen",
+                                                 args.encoder_lr, args.llrd)
+        parts = [lora, "head lr %g" % args.head_lr]
+    else:
+        parts = ["frozen encoder" if args.freeze_encoder else "full fine-tune",
+                 "enc lr %g, head lr %g" % (args.encoder_lr, args.head_lr), "llrd %g" % args.llrd]
+    parts += ["warmup %g" % args.warmup_ratio, "%s schedule" % args.schedule, "weight decay %g" % args.weight_decay,
+              "loss %s" % args.loss, "label smoothing %g" % args.label_smoothing]
     if args.oversample:
         parts.append("oversample %s" % args.oversample)
     if args.patience:
         parts.append("patience %d" % args.patience)
     if args.max_minutes:
         parts.append("budget %g min" % args.max_minutes)
+    if args.no_thresholds:
+        parts.append("no decision thresholds")
+    parts.append("select %s" % args.select_metric)
     return ", ".join(parts)
 
 
 def write_training_report(path: Path, history: list, best_epoch: int, args, budget: str):
     L = ["# Laya fine-tuning report", "", "_%s · base `%s` · %s_" % (time.strftime("%Y-%m-%d %H:%M"), args.base, budget), "",
          "**Strategy:** %s" % strategy_line(args), "",
-         "Epoch 00 is the untuned model. Scores are mean macro-F1 over questions (decision accuracy in parentheses).", "",
-         "| Epoch | Train loss | Real | Synthetic | Counterfactual | Overall | Escalate recall (real) | Will-fail recall (real) |",
-         "|---|---|---|---|---|---|---|---|"]
+         "Epoch 00 is the untuned model. Scores are mean macro-F1 over questions (decision accuracy in parentheses), "
+         "with the decision thresholds fitted on the calibration missions. **Real (argmax)** is the same without them, "
+         "comparable with runs that had none. **Calib CE** is unsmoothed cross-entropy on the calibration missions: "
+         "compare runs on it and on held-out F1, never on train loss (label smoothing alone floors it at ~0.16).", "",
+         "| Epoch | Train loss | Calib CE | Real | Real (argmax) | Synthetic | Counterfactual | Overall | Escalate recall (real) | Will-fail recall (real) |",
+         "|---|---|---|---|---|---|---|---|---|---|"]
     for h in history:
         s = h["summary"]
 
@@ -98,9 +125,12 @@ def write_training_report(path: Path, history: list, best_epoch: int, args, budg
             v = s.get("real", {}).get(q, {}).get("recall")
             return "%.1f%%" % (100 * v) if v is not None and v == v else "–"
         mark = (" **best**" if h["epoch"] == best_epoch else "") + (" (partial)" if h.get("partial") else "")
-        L.append("| %02d%s | %s | %s | %s | %s | %s | %s | %s |" % (
-            h["epoch"], mark, "%.4f" % h["loss"] if h["loss"] is not None else "–", cell("real"), cell("synthetic"),
-            cell("counterfactual"), cell("overall"), rec("escalate"), rec("will_fail")))
+        ce = s.get("calib", {}).get("ce")
+        am = s.get("argmax", {}).get("real", {}).get("mean_macro_f1")
+        L.append("| %02d%s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
+            h["epoch"], mark, "%.4f" % h["loss"] if h["loss"] is not None else "–",
+            "%.4f" % ce if ce is not None else "–", cell("real"), "%.3f" % am if am is not None else "same",
+            cell("synthetic"), cell("counterfactual"), cell("overall"), rec("escalate"), rec("will_fail")))
     L += ["", "Per-epoch details: `epoch_NN/report.md`. Best checkpoint: `best/`; last epoch: `final/`."]
     path.write_text("\n".join(L) + "\n", encoding="utf-8")
 
@@ -149,7 +179,8 @@ def main():
     g.add_argument("--epochs", type=int, default=6)
     g.add_argument("--micro-batch", type=int, default=8)
     g.add_argument("--grad-accum", type=int, default=4)
-    g.add_argument("--encoder-lr", type=float, default=2e-5, help="peak LR of the TOP encoder layer")
+    g.add_argument("--encoder-lr", type=float, default=2e-5,
+                   help="peak LR of the TOP encoder layer (full fine-tune); with --lora, the LR of the LayerNorms")
     g.add_argument("--head-lr", type=float, default=1e-4)
     g.add_argument("--warmup-ratio", type=float, default=0.06, help="fraction of updates spent warming up")
     g.add_argument("--schedule", default="cosine", choices=["cosine", "linear", "constant"])
@@ -166,8 +197,14 @@ def main():
     g.add_argument("--lora", action="store_true", help="LoRA adapters on the encoder (Hugging Face PEFT); head trains fully")
     g.add_argument("--lora-r", type=int, default=16)
     g.add_argument("--lora-alpha", type=int, default=32)
-    g.add_argument("--lora-dropout", type=float, default=0.05)
-    g.add_argument("--lora-targets", default="Wqkv,Wo,Wi")
+    g.add_argument("--lora-dropout", type=float, default=0.0, help="0 matches ModernBERT's own (zero) dropout")
+    g.add_argument("--lora-targets", default="Wqkv,Wo,Wi", help="Wo matches both attn.Wo and mlp.Wo")
+    g.add_argument("--lora-lr", type=float, default=2e-4,
+                   help="adapter LR, flat across layers (~10x the full fine-tune LR; --llrd does not apply)")
+    g.add_argument("--loraplus-ratio", type=float, default=1.0, help="LoRA+: lora_B LR = lora lr x ratio (try 8-16)")
+    g.add_argument("--lora-init", default="default",
+                   help="default (B=0) or a PEFT init: pissa_niter_16, olora, ... (pissa: lower --lora-lr to ~5e-5)")
+    g.add_argument("--no-lora-norms", action="store_true", help="keep the encoder LayerNorms frozen under LoRA")
     g.add_argument("--freeze-encoder", action="store_true", help="train the decision head only (fast, weaker)")
     g.add_argument("--grad-checkpointing", action="store_true", help="less memory, ~30%% slower")
     g = ap.add_argument_group("runtime")
@@ -177,7 +214,11 @@ def main():
     g.add_argument("--bench-limit", type=int, default=0, help="stratified N benchmark rows per epoch (faster)")
     g.add_argument("--calib-limit", type=int, default=0, help="use N calibration rows (smoke test)")
     g.add_argument("--batch-size", type=int, default=16, help="benchmark inference batch")
-    g.add_argument("--select-metric", default="overall", choices=["overall", "real", "synthetic", "counterfactual"])
+    g.add_argument("--select-metric", default="overall",
+                   choices=["overall", "real", "synthetic", "counterfactual", "calib-ce"],
+                   help="calib-ce selects on the calibration missions, so the benchmark stays an unselected test")
+    g.add_argument("--no-thresholds", action="store_true",
+                   help="don't fit per-question decision thresholds on the calibration missions (plain argmax)")
     g.add_argument("--push-to-hub", default=None, help="HF repo id to upload the best checkpoint to")
     args = ap.parse_args()
     if args.lora and args.freeze_encoder:
@@ -199,12 +240,15 @@ def main():
     dev = resolve_device(args.device)
     model, tok, cfg = load_checkpoint(args.base)
     if args.lora:
-        apply_lora(model, args.lora_r, args.lora_alpha, args.lora_dropout, args.lora_targets.split(","))
+        apply_lora(model, args.lora_r, args.lora_alpha, args.lora_dropout, args.lora_targets.split(","),
+                   init=args.lora_init, train_norms=not args.no_lora_norms)
     model.to(dev)
+    runner = LayaRunner(model, tok, cfg, dev, name=args.base, amp=False if args.no_amp else None)
     max_len, head_max_len = cfg.get("max_len", 512), cfg.get("head_max_len", 192)
     parallel = uses_parallel_layout(cfg)
     loop_cfg = LoopConfig(epochs=args.epochs, micro_batch=args.micro_batch, grad_accum=args.grad_accum,
-                          encoder_lr=args.encoder_lr, head_lr=args.head_lr, warmup_ratio=args.warmup_ratio,
+                          encoder_lr=args.encoder_lr, head_lr=args.head_lr, lora_lr=args.lora_lr,
+                          loraplus_ratio=args.loraplus_ratio, warmup_ratio=args.warmup_ratio,
                           schedule=args.schedule, min_lr_ratio=args.min_lr_ratio, llrd=args.llrd,
                           weight_decay=args.weight_decay, loss=args.loss, freeze_encoder=args.freeze_encoder,
                           amp=not args.no_amp, grad_checkpointing=args.grad_checkpointing, seed=args.seed)
@@ -214,7 +258,7 @@ def main():
     added = {}
     if args.oversample:
         train_items, added = oversample_positives(train_items, parse_oversample(args.oversample), POSITIVE, args.seed)
-    calib_items, cskipped = items_from_rows(tok, calib_rows, max_len, head_max_len, 0.0)
+    calib_items, calib_metas, cskipped = runner.build_items(calib_rows)
     updates = math.ceil(math.ceil(len(train_items) / args.micro_batch) / args.grad_accum) * args.epochs
     budget = "%d train items%s, effective batch %d, %d optimizer updates over %d epoch(s)" % (
         len(train_items), (" (+%s oversampled)" % added) if added else "", args.micro_batch * args.grad_accum,
@@ -227,7 +271,6 @@ def main():
         print("WARNING: only %d optimizer updates; small runs can collapse to the class prior (laya #963). "
               "Raise --epochs or lower --grad-accum." % updates, flush=True)
 
-    runner = LayaRunner(model, tok, cfg, dev, name=args.base, amp=False if args.no_amp else None)
     history, best = [], {"score": float("-inf"), "epoch": None, "stale": 0}
     run_meta = {"args": vars(args), "loop_config": asdict(loop_cfg), "budget": budget, "device": str(dev)}
     (out / "run_config.json").write_text(json.dumps(run_meta, indent=2), encoding="utf-8")
@@ -238,6 +281,9 @@ def main():
         out_cfg.pop("temperature_by_options", None)
         if temps.get("temperature_by_options"):
             out_cfg["temperature_by_options"] = temps["temperature_by_options"]
+        out_cfg.pop("decision_thresholds", None)
+        if temps.get("decision_thresholds"):
+            out_cfg["decision_thresholds"] = temps["decision_thresholds"]
         out_cfg["training"] = dict(out_cfg.get("training") or {}, spot_triage=run_meta)
         save_laya(model, tok, out_cfg, str(path))
         qs = {}
@@ -247,11 +293,12 @@ def main():
 
     def evaluate(epoch: int, loss, partial: bool = False):
         t0 = time.time()
-        temps = {"temperature": cfg.get("temperature"), "temperature_by_options": cfg.get("temperature_by_options")}
-        if epoch > 0:   # refit temperatures for the current weights on the held-out calibration missions
-            # same (qtype, logits, target, k) records as laya's calibration_records, but through the benchmark
-            # harness: fp16 + the benchmark batch size, ~3x faster on GPU and identical to how inference runs
-            lgs = runner.logits(calib_items, args.batch_size)
+        temps = {"temperature": cfg.get("temperature"), "temperature_by_options": cfg.get("temperature_by_options"),
+                 "decision_thresholds": cfg.get("decision_thresholds")}
+        # same (qtype, logits, target, k) records as laya's calibration_records, but through the benchmark
+        # harness: fp16 + the benchmark batch size, ~3x faster on GPU and identical to how inference runs
+        lgs = runner.logits(calib_items, args.batch_size)
+        if epoch > 0:   # refit temperatures and thresholds for the current weights on the calibration missions
             records = [(it["qtype"], lg, it["target"], it["k"]) for it, lg in zip(calib_items, lgs)]
             msg = prior_collapse_message(records)
             if msg:
@@ -259,14 +306,21 @@ def main():
             fitted = fit_temperature_map(records)
             temps = {"temperature": fitted["temperature"], "temperature_by_options": fitted["temperature_by_options"]}
             runner.set_temperatures(temps["temperature"], temps["temperature_by_options"])
+            thr = {} if args.no_thresholds else fit_thresholds(runner.decide(calib_items, calib_metas, lgs, thresholds=False))
+            runner.set_thresholds(thr)
+            temps["decision_thresholds"] = thr
+        cpreds = runner.decide(calib_items, calib_metas, lgs)
+        calib = {"ce": float(np.mean([-np.log(max(p["probs"][p["gold"]], 1e-12)) for p in cpreds])),
+                 "mean_macro_f1": question_scores(cpreds)["_all"]["mean_question_macro_f1"]}
         rep = run_benchmark(runner, bench_rows, train_rows, out / ("epoch_%02d" % epoch), "%s @ epoch %d" % (args.base, epoch),
                             batch_size=args.batch_size, with_classic=(epoch == 0), quiet=True)
         s = summarize(rep)
+        s["calib"] = calib
         history.append({"epoch": epoch, "loss": loss, "partial": partial, "summary": s, "temperatures": temps,
                         "eval_seconds": round(time.time() - t0, 1), "elapsed_min": round((time.time() - t_start) / 60, 1)})
         score = select(s, args.select_metric)
-        line = "epoch %02d | loss %s | real %.3f | synthetic %.3f | counterfactual %.3f | overall %.3f | eval %.0fs | %.1f min" % (
-            epoch, "%.4f" % loss if loss is not None else "  –   ",
+        line = "epoch %02d | loss %s | calib ce %.4f | real %.3f | synthetic %.3f | counterfactual %.3f | overall %.3f | eval %.0fs | %.1f min" % (
+            epoch, "%.4f" % loss if loss is not None else "  –   ", calib["ce"],
             s.get("real", {}).get("mean_macro_f1", float("nan")), s.get("synthetic", {}).get("mean_macro_f1", float("nan")),
             s.get("counterfactual", {}).get("mean_macro_f1", float("nan")), s["overall"]["mean_macro_f1"],
             time.time() - t0, (time.time() - t_start) / 60)
@@ -278,6 +332,10 @@ def main():
         elif epoch > 0:
             best["stale"] += 1
         print(line, flush=True)
+        if temps.get("decision_thresholds"):
+            print("         decision thresholds %s | real without them %.3f" % (
+                temps["decision_thresholds"], s.get("argmax", {}).get("real", {}).get("mean_macro_f1", float("nan"))),
+                flush=True)
         (out / "history.json").write_text(json.dumps(history, indent=2), encoding="utf-8")
         write_training_report(out / "training_report.md", history, best["epoch"], args, budget)
         return temps
@@ -295,9 +353,7 @@ def main():
 
     deadline, eval_s = None, 0.0
     if args.max_minutes:
-        # later evals also refit temperatures on the calibration items (~3.4 items per benchmark row)
-        calib_ratio = len(calib_items) / max(1.0, 3.4 * len(bench_rows))
-        eval_s = history[0]["eval_seconds"] * (1 + calib_ratio) * 1.1 + 15
+        eval_s = history[0]["eval_seconds"] * 1.1 + 15        # epoch 00 already scores the calibration items
         deadline = t_start + args.max_minutes * 60 - 45          # leave time to save final/
     t0 = time.time()
     train_loop(model, tok, train_items, loop_cfg, dev, max_len, head_max_len, parallel,

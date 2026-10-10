@@ -1,0 +1,12 @@
+# The build context is the REPO ROOT (docker build -f backend/Dockerfile .), so BuildKit reads this file through
+# its sibling `Dockerfile.dockerignore` (a symlink to it). Allowlist: send only what the image COPYs.
+*
+!backend/requirements.txt
+!backend/app/
+!amd/system1/triage/
+!amd/system1/data/kit/
+**/__pycache__/
+**/*.pyc
+**/.DS_Store
+**/.venv/
+**/.pytest_cache/

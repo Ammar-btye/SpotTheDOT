@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SPOT Triage Demo</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #fff; --text: #1d1d1b; --muted: #6b6b66; --line: #e2e2dd;
+    --ok: #1f7a3f; --ok-bg: #e5f3e9; --bad: #b42318; --bad-bg: #fbe9e7; --accent: #2d4fd6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141413; --panel: #1d1d1b; --text: #ececea; --muted: #9a9a94; --line: #33332f;
+      --ok: #6fcf8f; --ok-bg: #1c3324; --bad: #f2867a; --bad-bg: #3a1f1c; --accent: #8ea2ff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .muted { color: var(--muted); }
+  .feeds { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; margin: 20px 0; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+  .card h2 { font-size: 15px; margin: 0 0 4px; }
+  .card p { margin: 0 0 12px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  label { color: var(--muted); }
+  input, select, button { font: inherit; color: inherit; }
+  input[type=number] { width: 72px; }
+  input, select { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+  button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 7px 14px; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.secondary { background: transparent; color: var(--text); border: 1px solid var(--line); }
+  #status { min-height: 20px; margin-bottom: 8px; }
+  #status.error { color: var(--bad); }
+  .score { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .score div { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; }
+  .score b { font-variant-numeric: tabular-nums; }
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { font-weight: 600; color: var(--muted); font-size: 12px; }
+  td.log { font: 12px/1.4 ui-monospace, Menlo, monospace; word-break: break-word; }
+  .chip { display: inline-block; margin: 0 4px 4px 0; padding: 2px 7px; border-radius: 4px; font-size: 12px; white-space: nowrap; }
+  .chip.ok { background: var(--ok-bg); color: var(--ok); }
+  .chip.bad { background: var(--bad-bg); color: var(--bad); }
+  .tag { font-size: 11px; color: var(--muted); }
+  @media (max-width: 640px) { th.when, td.when { display: none; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>SPOT → System 1 (Laya) triage</h1>
+  <div class="muted" id="model">Loading model info…</div>
+
+  <section class="feeds">
+    <div class="card">
+      <h2>1 · Mock feed</h2>
+      <p class="muted">Simulated SPOT missions from the mock-data script, classified event by event.</p>
+      <div class="row">
+        <label for="mockN">Missions</label><input id="mockN" type="number" min="1" max="20" value="1">
+        <label for="mockSeed">Seed</label><input id="mockSeed" type="number" value="7">
+      </div>
+      <button id="runMock">Run mock feed</button>
+    </div>
+    <div class="card">
+      <h2>2 · Challenge-kit CSVs</h2>
+      <p class="muted">The provided CSVs. Upload any of them, or leave empty to use the bundled kit.</p>
+      <div class="row"><input id="files" type="file" accept=".csv" multiple></div>
+      <div class="row">
+        <label for="mission">Missions</label>
+        <select id="mission"><option value="holdout">Held-out (never trained on)</option><option value="all">All missions</option></select>
+      </div>
+      <button id="runKit">Classify kit data</button>
+    </div>
+  </section>
+
+  <div id="status" class="muted"></div>
+  <div class="score" id="score"></div>
+  <table>
+    <thead><tr><th class="when">Mission</th><th>Event</th><th>Laya's answers (✓ matches expected)</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+</main>
+<script>
+// Plain-word names for the A/B/C options (keys come from triage/questions.py).
+const OPTION = {
+  will_fail: { A: "will fail", B: "will succeed" },
+  anomaly_expected: { A: "anomaly", B: "no anomaly" },
+  escalate: { A: "escalate", B: "log only" },
+  reading_trust: { A: "trusted", B: "untrusted", C: "no reading" },
+  mission_misleading: { A: "hides problems", B: "honest" },
+};
+const KIND = { pre_action: "before action", action: "after action", mission: "mission end" };
+const $ = (id) => document.getElementById(id);
+const word = (q, k) => (OPTION[q] && OPTION[q][k]) || k;
+let controller = null, tally = {};
+
+function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]); }
+
+function setStatus(text, error = false) { $("status").textContent = text; $("status").className = error ? "error" : "muted"; }
+
+function renderScore() {
+  const all = Object.values(tally).reduce((a, t) => [a[0] + t[0], a[1] + t[1]], [0, 0]);
+  if (!all[1]) { $("score").innerHTML = ""; return; }
+  const cell = (name, [ok, n]) => `<div>${esc(name)} <b>${ok}/${n}</b> <span class="muted">${Math.round(100 * ok / n)}%</span></div>`;
+  $("score").innerHTML = cell("All answers", all) + Object.entries(tally).map(([q, t]) => cell(q, t)).join("");
+}
+
+function addRow(ev) {
+  const chips = Object.entries(ev.answers).map(([q, a]) => {
+    tally[q] = tally[q] || [0, 0];
+    tally[q][0] += a.correct ? 1 : 0; tally[q][1] += 1;
+    const tip = `confidence ${Math.round(100 * a.confidence)}%` + (a.correct ? "" : ` · expected ${word(q, a.expected)}`);
+    const miss = a.correct ? "" : ` (expected ${esc(word(q, a.expected))})`;
+    return `<span class="chip ${a.correct ? "ok" : "bad"}" title="${esc(tip)}">${a.correct ? "✓" : "✗"} ${esc(q)}: ${esc(word(q, a.pred))}${miss}</span>`;
+  }).join("");
+  const tr = document.createElement("tr");
+  tr.innerHTML = `<td class="when">${esc(ev.mission_id)}${ev.held_out ? '<div class="tag">held out</div>' : ""}</td>
+    <td class="log"><div class="tag">${esc(KIND[ev.kind])} · ${ev.ms} ms</div>${esc(ev.log)}</td><td>${chips}</td>`;
+  $("rows").prepend(tr);
+  renderScore();
+}
+
+async function run(url, body) {
+  if (controller) controller.abort();
+  controller = new AbortController();
+  tally = {}; $("rows").innerHTML = ""; renderScore();
+  setStatus("Starting…");
+  for (const b of document.querySelectorAll("button")) b.disabled = true;
+  let done = 0, total = 0;
+  try {
+    const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+                                   body: JSON.stringify(body), signal: controller.signal });
+    if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.detail || res.statusText); }
+    const reader = res.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done: end } = await reader.read();
+      if (end) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 1);
+        if (!line.trim()) continue;
+        const msg = JSON.parse(line);
+        if (msg.type === "start") { total = msg.events; setStatus(`Classifying ${total} events from ${msg.missions.length} mission(s)…`); }
+        else if (msg.type === "event") { addRow(msg); done++; setStatus(`Classified ${done} of ${total} events…`); }
+        else if (msg.type === "done") setStatus(`Done: ${done} events classified.`);
+      }
+    }
+  } catch (err) {
+    if (err.name !== "AbortError") setStatus("Error: " + err.message, true);
+  } finally {
+    for (const b of document.querySelectorAll("button")) b.disabled = false;
+  }
+}
+
+$("runMock").onclick = () => run("/api/mock", { missions: +$("mockN").value, seed: +$("mockSeed").value });
+
+$("runKit").onclick = async () => {
+  const files = {};
+  for (const f of $("files").files) files[f.name] = await f.text();
+  const m = $("mission").value;
+  run("/api/kit", { missions: m === "holdout" || m === "all" ? m : [m], files });
+};
+
+fetch("/api/info").then((r) => r.json()).then((info) => {
+  $("model").textContent = `Model: ${info.model} on ${info.device}. Expected labels: real outcomes (before action), triage policy (after action, mission end).`;
+  const held = new Set(info.holdout);
+  for (const m of info.missions) {
+    const o = document.createElement("option");
+    o.value = m; o.textContent = m + (held.has(m) ? " (held out)" : " (trained on)");
+    $("mission").append(o);
+  }
+}).catch(() => setStatus("Can't reach the server.", true));
+</script>
+</body>
+</html>

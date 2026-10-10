@@ -11,6 +11,11 @@ Splits (all by MISSION, so no event or rendering of it can appear on both sides)
 - The simulator is fitted on the 18 training missions only, then generates disjoint synthetic sets:
   train (ST*), calibration (SC*, for temperature fitting) and holdout (SH*, a benchmark segment).
 - Counterfactual edits of holdout events form a third benchmark segment (Track B robustness).
+- Counterfactual edits of TRAINING events are added to train (--train-counterfactuals), each tagged with a
+  `pair` key shared with its original event so the trainer batches them together: the model sees that one
+  field (battery, criticality, severity, reading quality) flips the label. The edit families are the same
+  as the benchmark's, so report that segment as in-family robustness. These rows use their own RNG, so
+  calib.jsonl and benchmark.jsonl are byte-identical with or without them.
 """
 import argparse
 import copy
@@ -159,7 +164,9 @@ def main():
     ap.add_argument("--synth-train", type=int, default=120, help="synthetic training missions")
     ap.add_argument("--synth-calib", type=int, default=30, help="synthetic calibration missions")
     ap.add_argument("--synth-holdout", type=int, default=40, help="synthetic benchmark missions")
-    ap.add_argument("--counterfactuals", type=int, default=150)
+    ap.add_argument("--counterfactuals", type=int, default=150, help="benchmark counterfactuals (holdout events)")
+    ap.add_argument("--train-counterfactuals", type=int, default=600,
+                    help="counterfactual pairs added to train (training events; 0 = none)")
     ap.add_argument("--no-token-check", action="store_true")
     args = ap.parse_args()
 
@@ -182,6 +189,15 @@ def main():
     bench = (to_rows(real_hold, "real", ALL, rng) + to_rows(syn_hold, "synthetic", ONE, rng)
              + to_rows(cf, "counterfactual", ONE, rng))
 
+    # training counterfactuals: own RNGs (seed + 5, + 6) so the rows above don't change
+    cf_train = counterfactuals(real_train + syn_train, random.Random(args.seed + 5), args.train_counterfactuals)
+    train += to_rows(cf_train, "train_counterfactual", ONE, random.Random(args.seed + 6))
+    paired = {c["event_id"].split("~")[0] for c in cf_train}
+    for r in train:
+        base = r["meta"]["event_id"].split("~")[0]
+        if base in paired:
+            r["meta"]["pair"] = base
+
     # A benchmark state identical to a training/calibration state would leak; drop it.
     seen = {json.dumps(r["state"], sort_keys=True) for r in train + calib}
     before = len(bench)
@@ -201,6 +217,7 @@ def main():
         "policy_version": POLICY_VERSION, "seed": args.seed, "holdout_fold": args.holdout_fold,
         "folds": folds, "holdout_missions": hold_ids, "train_missions": train_ids,
         "synthetic_missions": {"train": args.synth_train, "calib": args.synth_calib, "holdout": args.synth_holdout},
+        "counterfactuals": {"benchmark": len(cf), "train": len(cf_train)},
         "rows": {"train": len(train), "calib": len(calib), "benchmark": len(bench)},
         "benchmark_dropped_as_duplicate_of_train": dropped,
         "segments": {k: {"%s/%s" % s: n for s, n in seg_counts(v).items()}

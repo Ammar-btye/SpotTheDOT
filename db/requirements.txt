@@ -1,0 +1,6 @@
+# db/setup.py, db/smoke_test.py and amd/embed/ingest.py + client.py (the db tooling). CPU-only, no torch:
+# ingestion calls the embedding service over HTTP.
+psycopg[binary]>=3.1
+pypdf>=4.0
+fonttools>=4.40      # lets pypdf decode the manual's CFF fonts cleanly
+httpx>=0.27

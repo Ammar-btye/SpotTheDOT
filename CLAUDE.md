@@ -12,6 +12,17 @@ Current goal: learn what wins hackathons from past winners, so we can design a w
 - Main prizes: Best Overall 1st–3rd, Most "Useful" Hack, Best Embedded, Best AI, Best Game Dev, Best First-Time Hacker.
 - MLH prizes (https://www.mlh.com/events/knight-hacks-ix/prizes): ElevenLabs, Gemini API, Tiger Data, Solana, Presage, Vultr, GoDaddy Registry domain, DEV Writing Challenge.
 
+## Engineering rules
+- **Containerize every service.** Each new app or service gets its own `Dockerfile` + `.dockerignore` in its folder,
+  configured only by env vars, with a HEALTHCHECK and a non-root user.
+- **One unified `docker-compose.yml` at the repo root runs the whole project.** Whenever a container is added, removed
+  or changed (new service, port, env var, volume, healthcheck, build arg, dependency), update `docker-compose.yml` in
+  the same change, plus the ports table in `docs/backend-services-contract.md`, the header comment listing services,
+  and `docs/RUNNING.md`. Never add a second compose file; use profiles inside the unified one.
+- GPU services take a `TORCH_VARIANT` build arg (`cpu` | `rocm-gfx1151` | `rocm-gfx1201`). The AMD Radeon Cloud
+  Jupyter VMs have no root and can't run Docker, so there the same code runs natively in a venv.
+- Services talk over HTTP using the contracts in `docs/` (e.g. `docs/system2-rag-contract.md`); change the contract first.
+
 ## Context protocol
 - At the start of every session, read `research/INDEX.md` and `research/decisions.md`.
 - Open individual research files only when the task needs them. Don't load them all.

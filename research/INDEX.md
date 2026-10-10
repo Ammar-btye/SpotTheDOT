@@ -12,9 +12,12 @@ One line per file. Open a file only when the task needs it. Grep `research/` bef
 - [tech-laya-rocm-finetune-2026-10-10.md](tech-laya-rocm-finetune-2026-10-10.md): Laya on gfx1151. Probably works but untested (SDPA, no flash-attn). Use eager mode, no `laya[fast]`, soft-ce loss, ≥350 updates; watch for prior collapse (#963).
 - [tech-system1-alternatives-2026-10-10.md](tech-system1-alternatives-2026-10-10.md): Laya is sound after fine-tuning + calibration. Benchmark it against logistic regression, gradient boosting and TabICL. Time-series foundation models don't fit (3–7 points per asset).
 - [tech-cascade-alarm-mgmt-2026-10-10.md](tech-cascade-alarm-mgmt-2026-10-10.md): serial Laya → validate → LLM can't catch Laya misses, so run rules ‖ Laya in parallel with a rules priority floor. ISA-18.2/EEMUA 191 priorities (5/15/80), alarm-rate metrics.
+- [tech-lora-gap-2026-10-10.md](tech-lora-gap-2026-10-10.md): why LoRA trailed full FT on Laya: undertrained (3 epochs, still rising), LLRD starved lower adapters, head LR too low, frozen norms. Train loss isn't comparable (smoothing floor ~0.16). Run A = existing flags only.
 - [tech-smalldata-finetune-eval-2026-10-10.md](tech-smalldata-finetune-eval-2026-10-10.md): split by mission (3 folds of 9), keep synthetic separate from the real test, mission-level bootstrap CIs, calibrate on held-out data rather than random items.
 - [tech-system2-context-distill-2026-10-10.md](tech-system2-context-distill-2026-10-10.md): System 2 LLM. Prompt + grammar-JSON first, LoRA distillation only as a stretch. Templated SQL context packets with row-ID citations, plus numeric faithfulness checks.
 - [tech-amd-rocm-hf-serving-2026-10-09.md](tech-amd-rocm-hf-serving-2026-10-09.md): serving on gfx1151. Primary is llama.cpp built for ROCm/HIP; fallback is AMD's PyTorch wheels + `transformers serve`. VLM is Qwen3.5-9B (backup Qwen3-VL-8B). Untested on our hardware.
+
+- [tech-embedding-model-amd-2026-10-10.md](tech-embedding-model-amd-2026-10-10.md): embedding model for the pgvector RAG. Qwen3-Embedding-0.6B (1024-d, Apache-2.0) on ROCm sentence-transformers; fallback snowflake-arctic-embed-l-v2.0; exact search at our scale; Neon pgvector 0.8.x.
 
 ## Our event (Knight Hacks / Florida)
 - [winners-knighthacks-history-2026-10-09.md](winners-knighthacks-history-2026-10-09.md): **Key file.** Knight Hacks VI–VIII and Project Launch 2026 winners (59), IX logistics and rubric, and every sponsor's past prompts plus its IX status. Hardware + AI for health/accessibility won Overall in 2023, 2024 and 2025.
