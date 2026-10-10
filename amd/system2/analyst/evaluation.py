@@ -46,7 +46,7 @@ import urllib.parse
 from pydantic import ValidationError
 
 from .backend_contract import BackendAction, BackendAssessRequest, BackendAssessResponse
-from .dataset import SavedCase, content_hash, validate_dataset
+from .dataset import SPLITS, SavedCase, content_hash, validate_dataset
 from .grounding import EntityCatalog, check_assessment, default_catalog
 from .packet import PreparedPacket, normalize_packet
 from .paths import repo_root
@@ -97,6 +97,7 @@ class EvalDataset:
     manifest: dict
     file_sha256: str
     path: str
+    split: str = 'train'
 
 
 @dataclass(frozen=True)
@@ -117,10 +118,13 @@ def load_eval_dataset(path) -> EvalDataset:
         raise ValueError('cannot read saved dataset') from exc
     if not isinstance(value, dict) or not isinstance(value.get('manifest'), dict):
         raise ValueError('evaluation requires an approved dataset with its manifest')
-    cases = validate_dataset(value)   # empty, leakage, future evidence, holdout and manifest mismatch all fail here
+    split = value['manifest'].get('split', 'train')    # absent = the Phase 2 training manifest
+    if split not in SPLITS:
+        raise ValueError('unknown dataset split')
+    cases = validate_dataset(value, split)   # empty, leakage, future evidence, split and manifest mismatch fail here
     for c in cases:
         reference_action(c.reference)
-    return EvalDataset(cases, value['manifest'], hashlib.sha256(raw).hexdigest(), str(path))
+    return EvalDataset(cases, value['manifest'], hashlib.sha256(raw).hexdigest(), str(path), split)
 
 
 def reference_action(reference) -> Optional[str]:
