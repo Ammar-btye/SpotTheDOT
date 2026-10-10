@@ -2,13 +2,18 @@
 
 The population is recomputed here independently from system1's kit and policy, the real save_packets.py and
 evaluate.py CLIs run in subprocesses, and every tamper must make the held-out validator fail closed. The train
-validator (and through it the few-shot loader) must reject the held-out file, and vice versa.
+validator (and through it the few-shot loader) must reject the held-out file, and vice versa. Only the full held-out
+set is headline-eligible, and on held-out runs the few-shots sent to a (fake, loopback) llama-server come only from
+the training pool; a non-training pool is refused before any HTTP call. No model or GPU is involved.
 """
 import copy
+import dataclasses
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -23,7 +28,9 @@ EVALUATE = SYS2 / 'scripts/evaluate.py'
 
 from analyst.dataset import (HOLDOUT_MISSIONS, evidence_item, load_dataset, source_tables,  # noqa: E402
                              validate_dataset)
-from analyst.prompts import load_examples  # noqa: E402
+from analyst.evaluation import EvalConfig, ModelRunner, load_eval_dataset, run_evaluation  # noqa: E402
+from analyst.generation import LlamaGenerator  # noqa: E402
+from analyst.prompts import Example, example_output, load_examples  # noqa: E402
 from triage.events import action_event, mission_events  # noqa: E402
 from triage.kit import load_kit  # noqa: E402
 from triage.policy import label_action, label_mission  # noqa: E402
@@ -203,3 +210,111 @@ def test_template_evaluation_on_heldout(tmp_path):
     rows = [json.loads(line) for line in (out / 'cases.jsonl').read_text(encoding='utf-8').splitlines()]
     assert len(rows) == 38 and {r['runner'] for r in rows} == {'template'}
     assert {r['split'] for r in rows} == {'heldout'}
+
+
+# ── headline eligibility ─────────────────────────────────────────────────────────────────────
+
+HEADLINE = '**Headline-eligible (held-out fold 2, full set).**'
+
+
+def test_full_heldout_is_headline_eligible_subset_is_not(tmp_path):
+    full, part = tmp_path / 'full', tmp_path / 'part'
+    assert run(EVALUATE, '--dataset', HELDOUT, '--out-dir', full, '--quiet', timeout=180).returncode == 0
+    assert run(EVALUATE, '--dataset', HELDOUT, '--out-dir', part, '--limit', '5', '--quiet',
+               timeout=180).returncode == 0
+    m = json.loads((full / 'metrics.json').read_text(encoding='utf-8'))
+    assert m['scope']['headline_eligible'] is True and 'fold-2 held-out' in m['scope']['note']
+    report = (full / 'report.md').read_text(encoding='utf-8')
+    assert HEADLINE in report and '**Not headline numbers.**' not in report
+    m = json.loads((part / 'metrics.json').read_text(encoding='utf-8'))
+    assert m['scope']['headline_eligible'] is False and m['scope']['split'] == 'heldout'
+    report = (part / 'report.md').read_text(encoding='utf-8')
+    assert HEADLINE not in report and '**Not headline numbers.**' in report
+
+
+def test_dev_dataset_never_headline_eligible(tmp_path):
+    out = tmp_path / 'dev'
+    assert run(EVALUATE, '--dataset', DEV, '--out-dir', out, '--quiet', timeout=180).returncode == 0
+    m = json.loads((out / 'metrics.json').read_text(encoding='utf-8'))
+    assert m['scope']['headline_eligible'] is False and m['scope']['split'] == 'train'
+    assert HEADLINE not in (out / 'report.md').read_text(encoding='utf-8')
+
+
+# ── few-shot isolation over a fake loopback llama-server ─────────────────────────────────────
+
+@pytest.fixture
+def server():
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            self.server.requests.append(body)
+            # Unparseable reply: the pipeline retries once, then falls back. This test checks requests, not output.
+            data = json.dumps({'model': 'qwen-fake', 'choices': [{'index': 0, 'finish_reason': 'stop', 'message': {
+                'role': 'assistant', 'content': '{"evidence": ['}}]}).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *args):
+            pass
+
+    http = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    http.daemon_threads = True
+    http.requests = []
+    worker = threading.Thread(target=http.serve_forever, kwargs={'poll_interval': 0.02}, daemon=True)
+    worker.start()
+    yield http, 'http://127.0.0.1:%d' % http.server_port
+    http.shutdown()
+    http.server_close()
+    worker.join()
+
+
+def _leaks(text, strings):
+    return [s for s in strings if s in text or json.dumps(s, ensure_ascii=False)[1:-1] in text]
+
+
+def test_heldout_prompts_use_training_fewshots_only(server, tmp_path):
+    http, url = server
+    out = tmp_path / 'both'
+    result = run(EVALUATE, '--dataset', HELDOUT, '--runner', 'both', '--model-url', url, '--model', 'qwen-fake',
+                 '--out-dir', out, '--label', 'fake-http-regression', '--quiet', timeout=300)
+    assert result.returncode == 0, result.stderr
+    dev_ids = {c.case_id for c in load_dataset(DEV)}
+    cases = load_dataset(HELDOUT, split='heldout')
+    rows = [json.loads(line) for line in (out / 'cases.jsonl').read_text(encoding='utf-8').splitlines()]
+    model_rows = [r for r in rows if r['kind'] == 'model']
+    assert len(model_rows) == 38
+    for r in model_rows:
+        assert r['prompt']['example_case_ids'] and set(r['prompt']['example_case_ids']) <= dev_ids
+    heldout_text = {v for c in cases for v in c.prepared.content.values()}
+    packets = {json.dumps(sorted(c.prepared.content.items())) for c in cases}
+    assert len(http.requests) >= 38
+    for body in http.requests:
+        messages = body['messages']
+        assert len(messages) == 8       # system, three example pairs, current packet
+        for m in messages[1:-1]:
+            assert not _leaks(m['content'], heldout_text)
+        current = json.loads(messages[-1]['content'].split('\n', 1)[1].split('\n\n')[0])
+        assert json.dumps(sorted(current['evidence'].items())) in packets
+
+
+def _bad_pools():
+    good = load_examples()
+    held = next(c for c in load_dataset(HELDOUT, split='heldout') if c.category != 'mission')
+    as_heldout = Example(held.case_id, held.category, held.mission_id, 'heldout', held.prepared,
+                         tuple(held.source_lineage), json.dumps(example_output(held.prepared), ensure_ascii=False))
+    return {'heldout_split': good[:3] + (as_heldout,),
+            'heldout_mission': good[:3] + (dataclasses.replace(good[3], mission_id='M006'),),
+            'heldout_case_id': good[:3] + (dataclasses.replace(good[3], case_id=held.case_id),)}
+
+
+@pytest.mark.parametrize('pool', ['heldout_split', 'heldout_mission', 'heldout_case_id'])
+def test_non_training_fewshot_pool_refused_before_any_call(server, pool):
+    http, url = server
+    dataset = load_eval_dataset(HELDOUT)
+    runner = ModelRunner(LlamaGenerator(url, model='qwen-fake', examples=_bad_pools()[pool]))
+    with pytest.raises(ValueError, match='training-only'):
+        run_evaluation(dataset, [runner], EvalConfig(model_url=url, model='qwen-fake', limit=2))
+    assert http.requests == []

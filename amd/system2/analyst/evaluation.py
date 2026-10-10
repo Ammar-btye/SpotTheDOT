@@ -19,8 +19,11 @@ the request before any run) is reported as agreement, not action quality. Action
 independent case reference {expected_action, source}, which lives outside the request and never reaches a prompt.
 Latency quantiles use the nearest-rank method on per-case latency in milliseconds, including retry and fallback.
 
-The approved dataset holds development kit packets from training missions only (synthetic kit data, few-shots from
-the same pool with the current case excluded), so scope.headline_eligible is always false. Measured timings vary
+The default dataset holds development kit packets from training missions only (synthetic kit data, few-shots from
+the same pool with the current case excluded), so its scope.headline_eligible is false. Only the full controlled
+held-out set (manifest split 'heldout', System 1 fold-2 missions) is headline-eligible; a --limit subset never is,
+and no caller flag can set it. On held-out runs every model runner's few-shot pool must be training-only, checked
+before any model call and again on the recorded example IDs afterwards. Measured timings vary
 between runs; identity (dataset, selection, config, prompt, entity catalog source and hash, code revision) and
 outcomes from a deterministic runner do not. No model or GPU is touched here; measurements are whatever endpoint
 the caller points the model runner at.
@@ -46,7 +49,7 @@ import urllib.parse
 from pydantic import ValidationError
 
 from .backend_contract import BackendAction, BackendAssessRequest, BackendAssessResponse
-from .dataset import SPLITS, SavedCase, content_hash, validate_dataset
+from .dataset import HOLDOUT_MISSIONS, SPLITS, SavedCase, content_hash, validate_dataset
 from .grounding import EntityCatalog, check_assessment, default_catalog
 from .packet import PreparedPacket, normalize_packet
 from .paths import repo_root
@@ -61,6 +64,10 @@ GROUNDING_LABEL = 'mechanical consistency with cited packet content (not entailm
 SCOPE_NOTE = ('Approved development kit packets from training missions only (synthetic kit data, few-shots drawn from '
               'the same pool with the current case excluded). Not held-out and not independent real-world '
               'observations; never a headline number.')
+HELDOUT_SCOPE_NOTE = ('Controlled packets from System 1 fold-2 held-out kit missions: dynamic evidence comes only from '
+                      "the flag's own mission at or before as_of, with no labels, targets or prior generated answers, "
+                      'and few-shots come from the training pool only. Headline numbers only for the full set; '
+                      'grounding is still mechanical consistency, not entailment.')
 PATHS = ('llm', 'retry', 'fallback', 'insufficient_context')
 CHECKS = ('schema_valid', 'citation_valid', 'numeric_consistent', 'name_consistent')
 # Checker error codes by metric; an unknown code fails the schema check (fail closed).
@@ -425,12 +432,34 @@ def _prompt_identity(records: List[dict]) -> Optional[dict]:
             'example_case_ids': {r['case_id']: r['prompt'].get('example_case_ids') for r in records if r['prompt']}}
 
 
+def check_fewshot_isolation(dataset: EvalDataset, runners: Sequence) -> None:
+    """Held-out runs only: every exposed few-shot example is a training-mission case outside this dataset."""
+    if dataset.split != 'heldout':
+        return
+    ids = {c.case_id for c in dataset.cases}
+    for runner in runners:
+        for e in getattr(getattr(runner, 'generator', None), 'examples', None) or ():
+            if e.split != 'train' or e.mission_id in HOLDOUT_MISSIONS or e.case_id in ids:
+                raise ValueError('few-shot pool must be training-only for held-out evaluation')
+
+
+def headline_eligible(dataset: EvalDataset, config: EvalConfig) -> bool:
+    """Only the full held-out set; derived from the dataset and selection, never from a caller flag."""
+    return dataset.split == 'heldout' and (config.limit is None or config.limit >= len(dataset.cases))
+
+
 def run_evaluation(dataset: EvalDataset, runners: Sequence, config: EvalConfig) -> dict:
     """Select, evaluate and assemble metrics.json content (records stay under 'records')."""
     selected = select_cases(dataset.cases, config.limit, config.seed)
+    check_fewshot_isolation(dataset, runners)     # before any model call
     started = utc_now()
     result = evaluate_cases(selected, runners, config)
     finished = utc_now()
+    if dataset.split == 'heldout':
+        ids = {c.case_id for c in dataset.cases}
+        used = {i for r in result['records'] for i in ((r['prompt'] or {}).get('example_case_ids') or ())}
+        if used & ids:
+            raise ValueError('held-out case used as a few-shot example')
     identity = {
         'harness_version': HARNESS_VERSION,
         'dataset': {'content_hash': dataset.manifest['content_hash'], 'file_sha256': dataset.file_sha256,
@@ -450,8 +479,9 @@ def run_evaluation(dataset: EvalDataset, runners: Sequence, config: EvalConfig) 
     model_url = config.model_url if any(r.kind == 'model' for r in runners) else None
     return {
         'identity': identity,
-        'scope': {'split': '+'.join(identity['dataset']['splits']), 'headline_eligible': False,
-                  'grounding_label': GROUNDING_LABEL, 'note': SCOPE_NOTE},
+        'scope': {'split': dataset.split, 'headline_eligible': headline_eligible(dataset, config),
+                  'grounding_label': GROUNDING_LABEL,
+                  'note': HELDOUT_SCOPE_NOTE if dataset.split == 'heldout' else SCOPE_NOTE},
         'measurement': {'label': config.label,
                         'source': 'http model endpoint + in-process template' if model_url else 'in-process template',
                         'endpoint_loopback': is_loopback(model_url), 'dataset_path': dataset.path,
@@ -474,7 +504,9 @@ def report(metrics: dict) -> str:
              meas['dataset_path'], ident['dataset']['content_hash'][:12], len(ident['dataset']['selected_case_ids']),
              ident['dataset']['case_count'], metrics['scope']['split'], meas['label'], meas['started_at'],
              meas['finished_at']),
-         '', '**Not headline numbers.** %s Grounding = %s.' % (metrics['scope']['note'], GROUNDING_LABEL), '',
+         '', '%s %s Grounding = %s.' % ('**Headline-eligible (held-out fold 2, full set).**'
+                                         if metrics['scope']['headline_eligible'] else '**Not headline numbers.**',
+                                         metrics['scope']['note'], GROUNDING_LABEL), '',
          '| metric | %s |' % ' | '.join(metrics['runners']), '|---|%s' % ('---|' * len(metrics['runners']))]
     rows = [('public response valid', lambda a: _fmt(a['public_response_valid'])),
             ('model accepted (llm+retry)', lambda a: _fmt(a['generation']['model_accepted'])),
