@@ -60,7 +60,7 @@
 
 ### 3.4 System 2 "Analyst": Hugging Face model on AMD ROCm → **AMD, Hugging Face, Best AI**
 - **What:** a FastAPI service in the **`amd/` folder of this repo**, running an open-source HF vision-language model on the Radeon 8060S with ROCm. Endpoints:
-  - `POST /v1/assess`: a flag + context packet (asset history, waypoint stats, risk score, optional image) → **Orbit-style JSON**: `question`, `answer`, `reasoning`, `recommended_action`, `confidence`, `severity_assessment`.
+  - `POST /v1/assess`: a flag + context packet (asset history, waypoint stats, risk score, optional image) → **Orbit-style JSON**: `question`, `answer`, `reasoning`, `recommended_action`, `confidence`, `severity_assessment`. (typed contract: amd/system2/analyst/contract.py; see section 4)
   - `POST /v1/vision`: an inspection image → structured reading (e.g., gauge psi, thermal hotspot °C) to cross-check against the logged value.
   - `POST /v1/debrief`: mission stats → a plain-English after-action summary for the Review page.
   - `GET /v1/bench`: tokens/sec, p50/p95 latency, and GPU memory on ROCm. **This is the AMD story in numbers.**
@@ -79,6 +79,15 @@
 - `scripts/system2-worker.ts`: polls Neon for escalated flags, builds the context packet, calls AMD `/v1/assess`, and stores the result. It's decoupled so a slow GPU never stalls the live feed.
 
 ## 4. The contract between `web/` and `amd/` (keep it in sync)
+> **Superseded (2026-10-10):** the typed contract in `amd/system2/analyst/contract.py` (contract `2026-10-10.2`)
+> replaces the sketch below. JSON Schemas live in `amd/system2/schema/` and request/response examples in
+> `amd/system2/fixtures/`. Key differences:
+> - The request carries only the System 1 flag (`{"flag": {...}}`); System 2 builds the context packet itself.
+> - The response nests `explanation` (`evidence`, `answer`, `question`, `recommended_action`, `confidence`,
+>   `insufficient_context`), the `packet` it was grounded in, and `meta` (`model`, `latency_ms`, `tokens_per_sec`, `path`).
+> - `confidence` is `low|med|high`, not a float; `recommended_action` is a fixed enum.
+> - `severity_assessment` and `reasoning` are replaced by cited `evidence` (every claim cites packet row IDs).
+
 ```http
 POST {AMD_API_URL}/v1/assess        Header: X-API-Key: {AMD_API_KEY}
 { "flag_id": "F-123", "event": {...}, "reasons": ["Battery 18% ≤ 30%", "..."],

@@ -1,0 +1,196 @@
+"""Committed schemas match backend HTTP and legacy offline models in contract property order.
+
+Run: uv run --no-project --with-requirements amd/system2/requirements.txt python -m pytest amd/system2/tests -q
+"""
+import json
+import re
+import subprocess
+import sys
+import copy
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+from pydantic import ValidationError
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from analyst.contract import CONTRACT_VERSION, EXPLANATION_ORDER, NAIVE_ISO, AssessRequest  # noqa: E402
+from analyst.backend_contract import BACKEND_CONTRACT_VERSION, BackendAssessRequest, BackendAssessResponse  # noqa: E402
+from analyst.api import create_app, KEY_HEADER  # noqa: E402
+from scripts.export_schema import SCHEMAS, export, render  # noqa: E402
+
+ROOT = Path(__file__).resolve().parents[1]
+SCHEMA_DIR = ROOT / "schema"
+
+
+def _load(name: str) -> dict:
+    return json.loads((SCHEMA_DIR / name).read_text(encoding="utf-8"))
+
+
+def test_committed_schemas_current():
+    assert export(SCHEMA_DIR, check=True) == []
+
+
+def test_check_cli_exits_zero():
+    r = subprocess.run([sys.executable, str(ROOT / "scripts" / "export_schema.py"), "--check"],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "%d schemas up to date" % len(SCHEMAS) in r.stdout
+
+
+def test_check_flags_drift(tmp_path):
+    export(tmp_path, check=False)
+    p = tmp_path / SCHEMAS[0][0]
+    p.write_text(p.read_text(encoding="utf-8").replace("Flag", "Flg", 1), encoding="utf-8")
+    assert export(tmp_path, check=True) == [SCHEMAS[0][0]]
+
+
+def test_response_schema_orders_explanation():
+    props = _load("assess_response.schema.json")["properties"]
+    assert tuple(props)[:6] == EXPLANATION_ORDER
+
+
+def test_schemas_forbid_extra():
+    for name, _, _, _ in SCHEMAS:
+        if name == "assess_request.schema.json":
+            assert _load(name).get("additionalProperties") is not False
+            continue
+        assert _load(name)["additionalProperties"] is False, name
+
+
+def test_timestamp_schema_matches_runtime():
+    ts = _load("flag.schema.json")["properties"]["timestamp"]
+    assert ts["type"] == "string" and ts["pattern"] == NAIVE_ISO and "format" not in ts
+    for p in sorted((ROOT / "fixtures").glob("*.json")):
+        d = json.loads(p.read_text(encoding="utf-8"))
+        assert re.fullmatch(ts["pattern"], d["request"]["flag"]["timestamp"]), p.stem
+        assert AssessRequest.model_validate_json(json.dumps(d["request"])) == AssessRequest.model_validate(d["request"])
+
+
+def test_schemas_carry_generated_marker():
+    for name, model, mode, version in SCHEMAS:
+        d = _load(name)
+        assert next(iter(d)) == "$comment", name
+        assert version in d["$comment"], name
+        expected_version = BACKEND_CONTRACT_VERSION if name.startswith("assess_") else CONTRACT_VERSION
+        assert version == expected_version
+        assert render(model, mode, version) == (SCHEMA_DIR / name).read_text(encoding="utf-8"), name
+
+
+def test_equipment_http_matches_published_models():
+    pair = json.loads((ROOT / "fixtures/backend/equipment.json").read_text(encoding="utf-8"))
+    BackendAssessRequest.model_validate(pair["request"])
+    key = "schema-test-key-0123456789abcdef"
+    with TestClient(create_app(api_key=key)) as client:
+        response = client.post("/v1/assess", json=pair["request"], headers={KEY_HEADER: key})
+    assert response.status_code == 200, response.text
+    BackendAssessResponse.model_validate(response.json())
+    for filename, model, mode in (("assess_request.schema.json", BackendAssessRequest, "validation"),
+                                  ("assess_response.schema.json", BackendAssessResponse, "serialization")):
+        schema = _load(filename)
+        schema.pop("$comment")
+        assert schema == model.model_json_schema(mode=mode)
+
+
+BACKEND_EXAMPLES = ("equipment", "robot_health", "navigation", "data_quality", "mission", "insufficient_context")
+
+
+def _matches_safety_keywords(instance, schema):
+    """Evaluate the published safety subset independently of Pydantic/export rendering.
+
+    This is deliberately a focused keyword evaluator, not a general JSON Schema validator.
+    Unknown keywords fail so tests cannot accidentally ignore a new safety constraint.
+    """
+    assert set(schema) <= {"properties", "required", "const", "enum", "minItems", "maxItems"}
+    if "const" in schema and (type(instance) is not type(schema["const"]) or instance != schema["const"]):
+        return False
+    if "enum" in schema and not any(type(instance) is type(v) and instance == v for v in schema["enum"]):
+        return False
+    if "minItems" in schema and len(instance) < schema["minItems"]:
+        return False
+    if "maxItems" in schema and len(instance) > schema["maxItems"]:
+        return False
+    if any(key not in instance for key in schema.get("required", [])):
+        return False
+    return all(_matches_safety_keywords(instance[key], rule)
+               for key, rule in schema.get("properties", {}).items() if key in instance)
+
+
+def _published_safety_accepts(response):
+    schema = _load("assess_response.schema.json")
+    branch = "then" if _matches_safety_keywords(response, schema["if"]) else "else"
+    return _matches_safety_keywords(response, schema[branch])
+
+
+@pytest.mark.parametrize("name", BACKEND_EXAMPLES)
+def test_published_safety_conditions_accept_valid_examples(name):
+    pair = json.loads((ROOT / "fixtures/backend" / (name + ".json")).read_text(encoding="utf-8"))
+    assert _published_safety_accepts(pair["response"])
+
+
+@pytest.mark.parametrize("name,changes", [
+    ("insufficient_context", {"confidence": "high"}),
+    ("insufficient_context", {"recommended_action": "MONITOR"}),
+    ("insufficient_context", {"evidence": [{"claim": "Unsupported", "ids": ["F1"]}]}),
+    ("insufficient_context", {"path": "stub"}),
+    ("equipment", {"evidence": []}),
+    ("equipment", {"path": "insufficient_context"}),
+])
+def test_published_safety_conditions_reject_each_inconsistent_response(name, changes):
+    pair = json.loads((ROOT / "fixtures/backend" / (name + ".json")).read_text(encoding="utf-8"))
+    response = dict(pair["response"], **changes)
+    assert not _published_safety_accepts(response)
+    with pytest.raises(ValidationError):
+        BackendAssessResponse.model_validate(response)
+
+
+@pytest.mark.parametrize("name", BACKEND_EXAMPLES)
+def test_backend_fixture_pair_matches_published_contract(name):
+    pair = json.loads((ROOT / "fixtures/backend" / (name + ".json")).read_text(encoding="utf-8"))
+    request = copy.deepcopy(pair["request"])
+    request["future_backend_field"] = {"nested": "additive input"}
+    assert BackendAssessRequest.model_validate(request).flag_id == request["flag_id"]
+    response = BackendAssessResponse.model_validate(pair["response"])
+    assert response.flag_id == request["flag_id"]
+    unexpected_output = dict(pair["response"], future_backend_field="not allowed")
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        BackendAssessResponse.model_validate(unexpected_output)
+
+
+def test_published_response_vocabulary_and_nested_strictness():
+    schema = _load("assess_response.schema.json")
+    assert schema["$defs"]["BackendEvidence"]["additionalProperties"] is False
+    assert schema["properties"]["confidence"]["enum"] == ["high", "medium", "low"]
+    actions = schema["$defs"]["BackendAction"]["enum"]
+    assert "MANUAL_REVIEW" in actions
+    assert all(action == action.upper() for action in actions)
+    assert set(schema["required"]) == set(EXPLANATION_ORDER) | {"flag_id", "path"}
+    assert schema["properties"]["model"]["default"] == "stub"
+    assert schema["properties"]["latency_ms"]["default"] == 0
+    assert schema["properties"]["tokens_per_sec"]["default"] is None
+    pair = json.loads((ROOT / "fixtures/backend/equipment.json").read_text(encoding="utf-8"))
+    response = dict(pair["response"], confidence="medium")
+    assert BackendAssessResponse.model_validate(response).confidence == "medium"
+    with pytest.raises(ValidationError):
+        BackendAssessResponse.model_validate(dict(response, confidence="med"))
+    with pytest.raises(ValidationError):
+        BackendAssessResponse.model_validate(dict(response, recommended_action="monitor"))
+    response = copy.deepcopy(pair["response"])
+    response["evidence"][0]["future_field"] = "unexpected"
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        BackendAssessResponse.model_validate(response)
+
+
+def test_export_drift_is_exact_text_and_read_only(tmp_path):
+    export(tmp_path, check=False)
+    path = tmp_path / "assess_response.schema.json"
+    original = path.read_text(encoding="utf-8")
+    drifted = original.rstrip("\n")
+    assert json.loads(drifted) == json.loads(original)
+    path.write_text(drifted, encoding="utf-8")
+    assert export(tmp_path, check=True) == [path.name]
+    assert path.read_text(encoding="utf-8") == drifted
+    path.unlink()
+    assert export(tmp_path, check=True) == [path.name]
+    assert not path.exists()

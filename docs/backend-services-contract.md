@@ -147,6 +147,38 @@ the next `/explain` retries System 2 (and replaces it on success); when unset, t
   `events.payload.triage.request_id` and `raw.spot_event_log.request_id` (**needs the additive column, RAG
   contract §6**; written only when it exists).
 - **System 1 load and logging (integrator, 2026-10-10, audit H2/M2).** Laya serves one request at a time. While an explicit batch call (forecast, `/system1/predict`) is in flight, ingest does not queue behind it: the event gets the rules-only verdict with `system1.status = laya_unavailable`, error `busy: ...`. A live forecast asks Laya for at most 5 actions per request; the rest get the empirical baseline. On the AMD GPU a batch takes well under a second, so this only matters on CPU. `app.model_calls` holds **one row per successful System 1 call, written by the System 1 service** (the true model latency). The backend writes `system='system1'` rows only for failed calls (`ok=false`, `metadata.caller='backend'`).
+- **Authoritative System 2 HTTP contract (2026-10-10.backend.1):** `POST /v1/assess` requires
+  `flag_id` (strict positive integer; booleans rejected), `flag` (object), and `context` (object).
+  Optional fields are `request_id` (string/null), `event` (object/null), and `reasons` (list of strings/null entries).
+  Additive input keys are ignored; DB rows need no legacy timestamp/kind/mission_health fields.
+  Consumed context fields: `question` string, `allowed_actions` code-to-description object or code list,
+  `suggested_action` allowed code, `citation_ids` string list, `missing`/`gaps` string lists,
+  `insufficient_context` boolean; evidence sections `facts`, `similar_incidents`, `asset_history`, `manual`,
+  `policy`, `system1` object lists and recursive `event`/`mission` objects. IDs retain their supplied spelling.
+  Evidence content comes from fact/text/content or substantive structured values, never IDs, titles or control metadata.
+  Malformed consumed values, unknown actions and conflicting duplicate IDs return 422. Valid absent/unusable
+  evidence, orphan citations, missing actions, nonempty missing/gaps or explicit insufficiency return 200 with
+  empty evidence, low confidence, MANUAL_REVIEW and path insufficient_context, before generation.
+  The flat response is `evidence[{claim,ids}]`, `answer`, `question`, `recommended_action`, `confidence`
+  (high/medium/low), `insufficient_context`, integer `flag_id`, `model`, nonnegative `latency_ms`,
+  nullable `tokens_per_sec`, and `path`. Every output object rejects extras. Response metadata (ADDED
+  2026-10-10, additive widening under the same version marker): `model` is a nonblank string (default `stub`);
+  `path` ∈ `stub | llm | retry | fallback | insufficient_context` (`llm` = first model attempt passed the checks,
+  `retry` = second attempt after one retry with the check errors, `fallback` = the checked template after both
+  attempts failed); `latency_ms` is a nonnegative integer and `tokens_per_sec` a finite nonnegative number or
+  null (booleans, NaN and infinity are rejected). Path rules: `insufficient_context` requires
+  insufficient_context true, empty evidence, low confidence and MANUAL_REVIEW; every other path requires
+  insufficient_context false and at least one evidence item; `stub` requires model `stub`, `fallback` requires
+  model `template`, and `llm`/`retry` name the serving model (never `stub` or `template`). Metadata stays flat:
+  no nested attempt or debug objects. The live `/v1/assess` still returns only `stub` and `insufficient_context`
+  in this phase; `llm`/`retry`/`fallback` come from the offline checked pipeline until Phase 3 wires it in.
+  Ordinary actions follow MCP ALL_ACTIONS and packet membership; System 2 explicitly extends the vocabulary
+  with MANUAL_REVIEW, appended internally without mutating caller context. Each citation resolves to actual
+  supplied content. X-API-Key authorization runs before parsing (401 for missing/wrong keys).
+  Legacy Phase 1 fixture models remain offline examples and do not define this HTTP contract.
+- System 2 container env (ADDED 2026-10-10): `SYSTEM2_API_KEY` (required, X-API-Key secret), `SYSTEM2_HOST` /
+  `SYSTEM2_PORT` (`0.0.0.0` / `8083` in the image), `SPOT_KIT_DIR` (`/app/kit`; compose mounts
+  `amd/system1/data/kit` read-only there for the grounding entity catalog and saved-packet row checks).
 - System 2 request the backend sends: `POST /v1/assess {"flag_id", "request_id", "flag", "event", "reasons":
   [detail strings], "context": <packet from GET /flags/{id}/context>}`; it accepts `reasoning` or R3's
   `evidence[{claim, ids}]`. Optional `POST /v1/debrief {"mission_id", "facts"}` → `{"summary",

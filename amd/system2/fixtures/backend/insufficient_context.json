@@ -1,0 +1,60 @@
+{
+  "name": "insufficient_context",
+  "description": "Representative offline integration example, not headline eval data. Insufficient-context case: System 2's data source cannot resolve the flagged action A9999 (no such action in the kit), so the packet has no event, asset or waypoint rows, no LLM runs, and the only allowed action is manual_review. Demonstrates meta.path insufficient_context. Database flag ID is illustrative; MCP IDs retained; ",
+  "request": {
+    "flag_id": 9999,
+    "flag": {
+      "flag_id": 9999,
+      "title": "What happened on action A9999?",
+      "status": "OPEN",
+      "category": "data_quality",
+      "priority": "P2",
+      "mission_id": "M002",
+      "action_id": "A9999",
+      "escalated": true,
+      "reasons": [
+        {
+          "rule": "reading_untrusted",
+          "detail": "Reading quality QUESTIONABLE"
+        }
+      ]
+    },
+    "context": {
+      "packet_version": "1",
+      "facts": [],
+      "allowed_actions": {},
+      "question": "What happened on action A9999?",
+      "insufficient_context": true,
+      "missing": [
+        "event",
+        "asset",
+        "waypoint"
+      ],
+      "gaps": [
+        "No action evidence available for the requested flag."
+      ],
+      "citation_ids": []
+    },
+    "event": {
+      "event_id": "act-A9999",
+      "event_type": "ACTION"
+    },
+    "reasons": [
+      "Reading quality QUESTIONABLE"
+    ],
+    "request_id": "fixture-insufficient_context"
+  },
+  "response": {
+    "evidence": [],
+    "answer": "Insufficient supplied context; request manual review.",
+    "question": "What happened on action A9999?",
+    "recommended_action": "MANUAL_REVIEW",
+    "confidence": "low",
+    "insufficient_context": true,
+    "flag_id": 9999,
+    "model": "stub",
+    "latency_ms": 0,
+    "tokens_per_sec": null,
+    "path": "insufficient_context"
+  }
+}

@@ -1,0 +1,149 @@
+{
+  "name": "navigation",
+  "description": "Representative offline integration example, not headline eval data. Navigation flag from real kit event act-A0037 (training mission M004): a successful navigation step at WP06 that raised a HIGH LOCALIZATION_ISSUE beside the CRITICAL Heat Exchanger 17. Demonstrates meta.path first_pass. All numbers computed from amd/system1/data/kit with triage.policy 2026-10-10.1. MCP action/document IDs retained in backend-shaped context; database flag ID is illustrative.",
+  "request": {
+    "flag_id": 37,
+    "flag": {
+      "flag_id": 37,
+      "title": "Is SPOT's position at WP06 reliable enough to keep inspecting Heat Exchanger 17?",
+      "status": "OPEN",
+      "category": "navigation",
+      "priority": "P1",
+      "mission_id": "M004",
+      "action_id": "A0037",
+      "escalated": true,
+      "reasons": [
+        {
+          "rule": "anomaly_severity",
+          "detail": "LOCALIZATION_ISSUE anomaly at severity HIGH"
+        },
+        {
+          "rule": "critical_asset",
+          "detail": "Heat Exchanger 17 has criticality CRITICAL"
+        }
+      ]
+    },
+    "context": {
+      "packet_version": "1",
+      "facts": [
+        {
+          "id": "F1",
+          "fact": "Severity HIGH on a CRITICAL-criticality asset gives P1, and a LOCALIZATION_ISSUE anomaly gives navigation, under policy 2026-10-10.1."
+        },
+        {
+          "id": "F2",
+          "fact": "WP06 has 1 kit localization/navigation failure (A0134 LOCALIZATION_FAILURE, mission M014) and 1 navigation anomaly (this one) across 17 actions."
+        }
+      ],
+      "event": {
+        "id": "action:A0037",
+        "mission_id": "M004",
+        "action_type": "NAVIGATION",
+        "status": "SUCCESS",
+        "failure_type": null,
+        "sequence": 7,
+        "duration_sec": 30,
+        "battery_pct": 43,
+        "asset": {
+          "id": "asset:HX-217",
+          "name": "Heat Exchanger 17",
+          "type": "Heat Exchanger",
+          "criticality": "CRITICAL"
+        },
+        "location": {
+          "id": "location:WP06",
+          "name": "Compressor Area",
+          "zone": "MECHANICAL",
+          "environment": "HIGH_NOISE"
+        },
+        "readings": [],
+        "anomalies": [
+          {
+            "id": "anomaly:AN025",
+            "anomaly_type": "LOCALIZATION_ISSUE",
+            "severity": "HIGH",
+            "operator_review_required": true
+          }
+        ]
+      },
+      "flag": {
+        "id": "flag:37",
+        "flag_id": 37,
+        "title": "Is SPOT's position at WP06 reliable enough to keep inspecting Heat Exchanger 17?",
+        "status": "OPEN",
+        "category": "navigation",
+        "priority": "P1",
+        "mission_id": "M004",
+        "action_id": "A0037",
+        "escalated": true,
+        "reasons": [
+          {
+            "rule": "anomaly_severity",
+            "detail": "LOCALIZATION_ISSUE anomaly at severity HIGH"
+          },
+          {
+            "rule": "critical_asset",
+            "detail": "Heat Exchanger 17 has criticality CRITICAL"
+          }
+        ]
+      },
+      "policy": [
+        {
+          "id": "policy:anomaly_severity",
+          "kind": "policy",
+          "title": "anomaly_severity",
+          "text": "Severity HIGH on a CRITICAL-criticality asset gives P1, and a LOCALIZATION_ISSUE anomaly gives navigation, under policy 2026-10-10.1."
+        }
+      ],
+      "allowed_actions": {
+        "REINSPECT_NOW": "retry the waypoint now",
+        "CLEAR_PATH": "have someone remove the obstacle blocking SPOT's path",
+        "ADJUST_WAYPOINT": "move or re-record the waypoint / add fiducials (noisy or low-light area)",
+        "UPDATE_AUTOWALK_MAP": "re-record the Autowalk route segment",
+        "MONITOR": "no action now; keep watching"
+      },
+      "suggested_action": "ADJUST_WAYPOINT",
+      "insufficient_context": false,
+      "question": "Is SPOT's position at WP06 reliable enough to keep inspecting Heat Exchanger 17?",
+      "citation_ids": [
+        "F1",
+        "F2",
+        "action:A0037",
+        "asset:HX-217",
+        "location:WP06",
+        "anomaly:AN025",
+        "flag:37",
+        "policy:anomaly_severity"
+      ]
+    },
+    "event": {
+      "event_id": "act-A0037",
+      "event_type": "ACTION"
+    },
+    "reasons": [
+      "LOCALIZATION_ISSUE anomaly at severity HIGH",
+      "Heat Exchanger 17 has criticality CRITICAL"
+    ],
+    "request_id": "fixture-navigation"
+  },
+  "response": {
+    "evidence": [
+      {
+        "claim": "Severity HIGH on a CRITICAL-criticality asset gives P1, and a LOCALIZATION_ISSUE anomaly gives navigation, under policy 2026-10-10.1.",
+        "ids": [
+          "F1"
+        ]
+      }
+    ],
+    "answer": "Severity HIGH on a CRITICAL-criticality asset gives P1, and a LOCALIZATION_ISSUE anomaly gives navigation, under policy 2026-10-10.1.",
+    "question": "Is SPOT's position at WP06 reliable enough to keep inspecting Heat Exchanger 17?",
+    "recommended_action": "ADJUST_WAYPOINT",
+    "confidence": "medium",
+    "insufficient_context": false,
+    "flag_id": 37,
+    "model": "stub",
+    "latency_ms": 0,
+    "tokens_per_sec": null,
+    "path": "stub"
+  }
+}

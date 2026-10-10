@@ -1,0 +1,144 @@
+{
+  "name": "data_quality",
+  "description": "Representative offline integration example, not headline eval data. Data-quality flag from real kit event act-A0030 (training mission M003): a gauge reading of Compressor 14 that failed with SENSOR_TIMEOUT and left a QUESTIONABLE pressure value at 17% battery. Demonstrates meta.path fallback with the templated explanation (meta.model template). All numbers computed from amd/system1/data/kit with triage.policy 2026-10-10.1. Database flag ID is illustrative; MCP IDs retained; ",
+  "request": {
+    "flag_id": 14,
+    "flag": {
+      "flag_id": 14,
+      "title": "What should the operator do about flag flag:act-A0030?",
+      "status": "OPEN",
+      "category": "data_quality",
+      "priority": "P2",
+      "mission_id": "M003",
+      "action_id": "A0030",
+      "escalated": true,
+      "reasons": [
+        {
+          "rule": "action_failed",
+          "detail": "GAUGE_READING failed with SENSOR_TIMEOUT"
+        },
+        {
+          "rule": "reading_untrusted",
+          "detail": "PRESSURE_PSI 114.2 psi has quality QUESTIONABLE"
+        },
+        {
+          "rule": "battery_low",
+          "detail": "Battery 17% is at or below the 25% low threshold"
+        }
+      ]
+    },
+    "context": {
+      "packet_version": "1",
+      "facts": [
+        {
+          "id": "F1",
+          "fact": "A SENSOR_TIMEOUT failure gives data_quality, and battery 17% at or below the 25% low threshold gives P2, under policy 2026-10-10.1."
+        },
+        {
+          "id": "F2",
+          "fact": "Quality QUESTIONABLE makes the reading untrusted, so it is not compared to the PRESSURE_PSI safe band 76.0-140.0."
+        }
+      ],
+      "allowed_actions": {
+        "REINSPECT_NOW": "send SPOT back to repeat the inspection now",
+        "MANUAL_READING": "have a technician take the reading by hand",
+        "CHECK_SENSOR_PAYLOAD": "inspect SPOT's sensor payload / camera for faults",
+        "REINSPECT_NEXT_ROUTE": "repeat the inspection on the next route",
+        "MONITOR": "no action now; keep watching"
+      },
+      "question": "What should the operator do about flag flag:act-A0030?",
+      "insufficient_context": false,
+      "suggested_action": "REINSPECT_NOW",
+      "event": {
+        "id": "action:A0030",
+        "mission_id": "M003",
+        "action_type": "GAUGE_READING",
+        "status": "FAILED",
+        "failure_type": "SENSOR_TIMEOUT",
+        "sequence": 10,
+        "duration_sec": 87,
+        "battery_pct": 17,
+        "readings": [
+          {
+            "id": "reading:R0053",
+            "measurement_type": "PRESSURE_PSI",
+            "value": 114.2,
+            "unit": "psi",
+            "quality": "QUESTIONABLE"
+          }
+        ]
+      },
+      "flag": {
+        "id": "flag:14",
+        "flag_id": 14,
+        "title": "What should the operator do about flag flag:act-A0030?",
+        "status": "OPEN",
+        "category": "data_quality",
+        "priority": "P2",
+        "mission_id": "M003",
+        "action_id": "A0030",
+        "escalated": true,
+        "reasons": [
+          {
+            "rule": "action_failed",
+            "detail": "GAUGE_READING failed with SENSOR_TIMEOUT"
+          },
+          {
+            "rule": "reading_untrusted",
+            "detail": "PRESSURE_PSI 114.2 psi has quality QUESTIONABLE"
+          },
+          {
+            "rule": "battery_low",
+            "detail": "Battery 17% is at or below the 25% low threshold"
+          }
+        ]
+      },
+      "policy": [
+        {
+          "id": "policy:action_failed",
+          "kind": "policy",
+          "title": "action_failed",
+          "text": "A SENSOR_TIMEOUT failure gives data_quality, and battery 17% at or below the 25% low threshold gives P2, under policy 2026-10-10.1."
+        }
+      ],
+      "citation_ids": [
+        "F1",
+        "F2",
+        "action:A0030",
+        "reading:R0053",
+        "flag:14",
+        "policy:action_failed"
+      ]
+    },
+    "event": {
+      "event_id": "act-A0030",
+      "event_type": "ACTION"
+    },
+    "reasons": [
+      "GAUGE_READING failed with SENSOR_TIMEOUT",
+      "PRESSURE_PSI 114.2 psi has quality QUESTIONABLE",
+      "Battery 17% is at or below the 25% low threshold"
+    ],
+    "request_id": "fixture-data_quality"
+  },
+  "response": {
+    "evidence": [
+      {
+        "claim": "A SENSOR_TIMEOUT failure gives data_quality, and battery 17% at or below the 25% low threshold gives P2, under policy 2026-10-10.1.",
+        "ids": [
+          "F1"
+        ]
+      }
+    ],
+    "answer": "A SENSOR_TIMEOUT failure gives data_quality, and battery 17% at or below the 25% low threshold gives P2, under policy 2026-10-10.1.",
+    "question": "What should the operator do about flag flag:act-A0030?",
+    "recommended_action": "REINSPECT_NOW",
+    "confidence": "medium",
+    "insufficient_context": false,
+    "flag_id": 14,
+    "model": "stub",
+    "latency_ms": 0,
+    "tokens_per_sec": null,
+    "path": "stub"
+  }
+}

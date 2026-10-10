@@ -13,14 +13,15 @@
 # mcp        8090  local, hybrid, neon      MCP context server for System 2 (streamable HTTP /mcp)
 # backend    8000  local, hybrid, neon      FastAPI dashboard API (/api/v1, /docs). ADMIN_TOKEN (header
 #                                           X-Admin-Token) guards /ops, /replay, POST /events; CORS_ORIGINS only
-# system2    8083  (placeholder, below)     teammate's amd/system2/ on branch aatif/system2; llama-server :8080.
-#                                           Not on main: the backend uses SYSTEM2_URL from .env, else templates.
+# system2    8083  local, hybrid, neon, system2  Authenticated packet-grounded stub (model=stub), no retrieval.
+#                                           Kit mounted read-only at /app/kit (SPOT_KIT_DIR) for grounding.
 #
 # Profiles:
 #   local   everything in Docker on CPU (testing; Laya ~3-8 s per event, embedding ~2.3 s per query)
-#   hybrid  db + db-init + mcp + backend in Docker; SYSTEM1_URL / EMBED_URL in .env point at the AMD GPU box,
+#   hybrid  db + db-init + mcp + backend + system2 in Docker; SYSTEM1_URL / EMBED_URL in .env point at the AMD GPU box,
 #           where system1 and embed run natively (the AMD Jupyter VMs have no root and can't run Docker)
 #   neon    Neon replaces `db`: DATABASE_URL (owner, db-init), BACKEND_DATABASE_URL, MCP_DATABASE_URL in .env
+#   system2 packet-grounded stub only, for independent integration checks
 #   models  embed + system1 on CPU, to pair with neon:  COMPOSE_PROFILES=neon,models
 #
 # Conventions (keep them when adding a service):
@@ -136,26 +137,20 @@ services:
       - "hf-cache:/models/hf"     # same volume as embed (both use <HF_HOME>/hub)
       - "${LAYA_CHECKPOINT_DIR:-./amd/system1/checkpoints}:/models/checkpoints:ro"
 
-  # ── System 2 placeholder (NOT on main) ─────────────────────────────────────────────────────────
-  # The teammate's explainer lives in amd/system2/ on branch aatif/system2 (POST /v1/assess, port 8083), backed by
-  # llama-server on 8080 on the AMD box. Until it is merged, point the backend at it with SYSTEM2_URL in .env
-  # (e.g. http://host.docker.internal:18083 through the SSH tunnel); unset -> /explain returns the template.
-  # When it lands on main, uncomment and fill in (and add it to the header table and docs/RUNNING.md):
-  #
-  # system2:
-  #   <<: *service
-  #   build: {context: ., dockerfile: amd/system2/Dockerfile}
-  #   image: spot-system2:compose
-  #   profiles: [system2]
-  #   depends_on:
-  #     mcp: {condition: service_healthy}
-  #   environment:
-  #     LLM_URL: ${LLM_URL:-http://host.docker.internal:8080}   # llama-server (AMD box, through the tunnel)
-  #     MCP_URL: http://mcp:8090/mcp
-  #     MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
-  #     SYSTEM2_API_KEY: ${SYSTEM2_API_KEY:-}
-  #   ports: ["${BIND_ADDR:-127.0.0.1}:8083:8083"]
-  #   # then set SYSTEM2_URL=http://system2:8083 for the backend
+  # System 2 receives prepared context from the backend; no MCP/database access.
+  system2:
+    <<: *service
+    build: {context: amd/system2}
+    image: spot-system2:compose
+    profiles: [local, hybrid, neon, system2]
+    environment:
+      SYSTEM2_API_KEY: ${SYSTEM2_API_KEY:-}
+      SYSTEM2_HOST: 0.0.0.0
+      SYSTEM2_PORT: "8083"
+      SPOT_KIT_DIR: /app/kit   # entity catalog + saved-packet row checks (offline grounding modules)
+    ports: ["${BIND_ADDR:-127.0.0.1}:8083:8083"]
+    volumes: ["./amd/system1/data/kit:/app/kit:ro"]
+    # Non-root runtime and healthcheck are inherited from the image.
 
   # ── application ────────────────────────────────────────────────────────────────────────────────
   mcp:
@@ -187,6 +182,7 @@ services:
       db-init: {condition: service_completed_successfully}
       mcp: {condition: service_healthy}
       system1: {condition: service_healthy, required: false}
+      system2: {condition: service_healthy, required: false}
       embed: {condition: service_healthy, required: false}
     environment:
       <<: *embed-env
@@ -196,7 +192,7 @@ services:
       SYSTEM1_URL: ${SYSTEM1_URL:-http://system1:8082}
       MCP_URL: ${MCP_URL:-http://mcp:8090/mcp}
       MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
-      SYSTEM2_URL: ${SYSTEM2_URL:-}
+      SYSTEM2_URL: ${SYSTEM2_URL:-http://system2:8083}
       SYSTEM2_API_KEY: ${SYSTEM2_API_KEY:-}
       # Sized for CPU (local profile). On the AMD GPU these can drop to the contract defaults (5/10/15/60).
       SYSTEM1_TIMEOUT_S: ${SYSTEM1_TIMEOUT_S:-30}               # explicit batch calls (forecast, /system1/predict)

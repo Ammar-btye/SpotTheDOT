@@ -1,0 +1,151 @@
+{
+  "name": "robot_health",
+  "description": "Representative offline integration example, not headline eval data. Robot-health flag from real kit event act-A0010 (training mission M001): a successful visual inspection of Heat Exchanger 04 run at 15% battery, the critical threshold. Demonstrates meta.path retry. All numbers computed from amd/system1/data/kit with triage.policy 2026-10-10.1. MCP action/document IDs retained in backend-shaped context; database flag ID is illustrative.",
+  "request": {
+    "flag_id": 10,
+    "flag": {
+      "flag_id": 10,
+      "title": "Can SPOT keep working at 15% battery?",
+      "status": "OPEN",
+      "category": "robot_health",
+      "priority": "P2",
+      "mission_id": "M001",
+      "action_id": "A0010",
+      "escalated": true,
+      "reasons": [
+        {
+          "rule": "battery_critical",
+          "detail": "Battery 15% is at or below the 15% critical threshold"
+        }
+      ]
+    },
+    "context": {
+      "packet_version": "1",
+      "facts": [
+        {
+          "id": "F1",
+          "fact": "Battery 15% is at or below the 15% critical threshold, giving robot_health, and at or below the 25% low threshold, giving P2, under policy 2026-10-10.1."
+        },
+        {
+          "id": "F2",
+          "fact": "Kit actions at battery <= 25% succeeded 8 of 24 (33%), versus 213 of 246 (87%) above 25%."
+        },
+        {
+          "id": "F3",
+          "fact": "Mission M001 started at 82% battery; this step-10 action ran at 15%, a drain of 67 points."
+        },
+        {
+          "id": "F4",
+          "fact": "Quality GOOD makes the reading trusted, and VISUAL_SCORE 70.0 is below the VISUAL_SCORE safe band minimum 72.0."
+        }
+      ],
+      "event": {
+        "id": "action:A0010",
+        "mission_id": "M001",
+        "action_type": "VISUAL_INSPECTION",
+        "status": "SUCCESS",
+        "failure_type": null,
+        "sequence": 10,
+        "duration_sec": 64,
+        "battery_pct": 15,
+        "asset": {
+          "id": "asset:HX-204",
+          "name": "Heat Exchanger 04",
+          "type": "Heat Exchanger",
+          "criticality": "MEDIUM"
+        },
+        "location": {
+          "id": "location:WP05",
+          "name": "Pipe Gallery",
+          "zone": "PROCESS",
+          "environment": "HIGH_NOISE"
+        },
+        "readings": [
+          {
+            "id": "reading:R0064",
+            "measurement_type": "VISUAL_SCORE",
+            "value": 70,
+            "unit": "score",
+            "quality": "GOOD"
+          }
+        ],
+        "anomalies": []
+      },
+      "flag": {
+        "id": "flag:10",
+        "flag_id": 10,
+        "title": "Can SPOT keep working at 15% battery?",
+        "status": "OPEN",
+        "category": "robot_health",
+        "priority": "P2",
+        "mission_id": "M001",
+        "action_id": "A0010",
+        "escalated": true,
+        "reasons": [
+          {
+            "rule": "battery_critical",
+            "detail": "Battery 15% is at or below the 15% critical threshold"
+          }
+        ]
+      },
+      "policy": [
+        {
+          "id": "policy:battery_critical",
+          "kind": "policy",
+          "title": "battery_critical",
+          "text": "Battery 15% is at or below the 15% critical threshold, giving robot_health, and at or below the 25% low threshold, giving P2, under policy 2026-10-10.1."
+        }
+      ],
+      "allowed_actions": {
+        "RETURN_TO_DOCK": "send SPOT to the dock now",
+        "CHARGE_BEFORE_NEXT_MISSION": "fully charge SPOT before the next mission",
+        "CHECK_COMMS": "check radio / network coverage at this waypoint",
+        "ABORT_MISSION": "stop the current mission",
+        "MONITOR": "no action now; keep watching"
+      },
+      "suggested_action": "RETURN_TO_DOCK",
+      "insufficient_context": false,
+      "question": "Can SPOT keep working at 15% battery?",
+      "citation_ids": [
+        "F1",
+        "F2",
+        "F3",
+        "F4",
+        "action:A0010",
+        "asset:HX-204",
+        "location:WP05",
+        "reading:R0064",
+        "flag:10",
+        "policy:battery_critical"
+      ]
+    },
+    "event": {
+      "event_id": "act-A0010",
+      "event_type": "ACTION"
+    },
+    "reasons": [
+      "Battery 15% is at or below the 15% critical threshold"
+    ],
+    "request_id": "fixture-robot_health"
+  },
+  "response": {
+    "evidence": [
+      {
+        "claim": "Battery 15% is at or below the 15% critical threshold, giving robot_health, and at or below the 25% low threshold, giving P2, under policy 2026-10-10.1.",
+        "ids": [
+          "F1"
+        ]
+      }
+    ],
+    "answer": "Battery 15% is at or below the 15% critical threshold, giving robot_health, and at or below the 25% low threshold, giving P2, under policy 2026-10-10.1.",
+    "question": "Can SPOT keep working at 15% battery?",
+    "recommended_action": "RETURN_TO_DOCK",
+    "confidence": "medium",
+    "insufficient_context": false,
+    "flag_id": 10,
+    "model": "stub",
+    "latency_ms": 0,
+    "tokens_per_sec": null,
+    "path": "stub"
+  }
+}
