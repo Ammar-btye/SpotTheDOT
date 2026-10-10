@@ -20,4 +20,4 @@ Agent-specific rules on top of that:
 - **Never invent results.** Numbers in READMEs, reports and research files come from a run you actually did (say
   where it ran) or are marked unverified. GPU numbers come only from the AMD box.
 - **No secrets in git.** Config comes from env vars, with examples in `.env.example`.
-- Task briefs for agents live in `docs/` (for example `docs/CODEX-KICKOFF-vision.md`).
+- Task briefs and runbooks for agents live in `docs/` (for example `docs/AMD-RUNS-2026-10-10.md`).
