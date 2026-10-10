@@ -37,7 +37,8 @@ the backend; the dashboard's read endpoints require no admin token. This wires t
 flag details, explanations and acknowledge/resolve/reopen actions are available. The search box remains
 unfinished. `FEATURE_FLAG_DETAILS`, `FEATURE_FLAG_ACTIONS`, and `FEATURE_FLAG_EXPLANATIONS` independently
 disable features with `false` (disabling details also disables its dependent features). After changing
-the root `.env`, run `docker compose up -d --no-deps web`. Re-enable with `true`; data is retained.
+the root `.env`, run `docker compose up -d --no-deps web`. `WEB_EXPLAIN_TIMEOUT_MS` (default 50000, 5000–120000) sets how
+long the dashboard waits for an explanation; raise it when System 2 runs a slow local model. Re-enable with `true`; data is retained.
 
 ```bash
 cp .env.example .env                # pick COMPOSE_PROFILES; dev passwords are fine locally
@@ -100,9 +101,12 @@ make down      # or `make wipe` to drop the database volume too
 - **GPU expectation:** on the AMD GPU a 64-event batch is one forward pass (well under a second), so none of
   this throttling shows. Run the demo in `hybrid` mode, with the contract-default timeouts.
 - Memory: give Docker Desktop at least 8 GB. `LAYA_MAX_BATCH=16` keeps System 1 under ~3.5 GB on large batches.
-- Fine-tuned Laya: put the run under `amd/system1/checkpoints/` (mounted read-only at `/models/checkpoints`), set
-  `LAYA_CHECKPOINT=/models/checkpoints/<run>/best`, then run `docker compose up -d system1`.
-  Check with `curl localhost:8082/v1/model`: it should show `fine_tuned: true`.
+- Fine-tuned Laya is the default: on first start System 1 downloads only `run4_B_lora_lr4/best/` (~850 MB) from the
+  private HF repo `Jyler/KnightHacks-Laya-Model` into the `hf-cache` volume, then reuses it. Put a read token in `.env`
+  as `HF_TOKEN=hf_...`. Without one, System 1 logs a warning and loads base Laya (`LAYA_FALLBACK_CHECKPOINT`).
+  Another run: `LAYA_CHECKPOINT_SUBDIR=<run>/best`. A local run: put it under `amd/system1/checkpoints/` (mounted
+  read-only at `/models/checkpoints`) and set `LAYA_CHECKPOINT=/models/checkpoints/<run>/best`. After a change, run
+  `docker compose up -d system1`. Check with `curl localhost:8082/v1/model`: it should show `fine_tuned: true`.
 
 ## Mode 2: `hybrid`: models native on the AMD GPU box
 The current SSH-reachable box (Radeon Pro W7900D, gfx1100, 48 GB; `ssh spot-amd`): specs, proxy, the Hugging Face

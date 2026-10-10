@@ -5,6 +5,7 @@ Companion to `docs/system2-rag-contract.md` (Neon tables, embedding API, MCP). *
 ## Services and ports (one container each; see CLAUDE.md "Engineering rules")
 | Service | Folder | Port | Owner |
 |---|---|---|---|
+| Web dashboard (Next.js dev server; calls the backend via `BACKEND_URL`) | `web/` | 3000 | frontend |
 | Backend API (FastAPI) | `backend/` | 8000 | backend agent |
 | System 1: Laya inference | `amd/system1/service/` | 8082 | System 1 service agent |
 | Embedding service | `amd/embed/` | 8081 | pgvector agent |
@@ -47,7 +48,10 @@ GET /health         → {"ok": true, "model_loaded": true}
 
 | Env var | Meaning | Default |
 |---|---|---|
-| `LAYA_CHECKPOINT` | HF repo id or local dir (a fine-tuned `best/` mounted at `/models/laya`) | `convaiinnovations/laya` |
+| `LAYA_CHECKPOINT` | HF repo id or local dir (a fine-tuned `best/` mounted at `/models/laya`) | `convaiinnovations/laya` (compose: `Jyler/KnightHacks-Laya-Model`) |
+| `LAYA_CHECKPOINT_SUBDIR` | folder inside the HF repo holding the checkpoint; only `<subdir>/*` is downloaded (into `HF_HOME`, cached across restarts). Ignored for a local dir | unset (compose: `run4_B_lora_lr4/best`) |
+| `LAYA_FALLBACK_CHECKPOINT` | loaded when the primary checkpoint can't be downloaded or loaded (e.g. a private repo with no `HF_TOKEN`); logged as a warning, and `/v1/model` then reports the fallback with `fine_tuned: false`. Empty = fail instead | `convaiinnovations/laya` |
+| `HF_TOKEN` | read token for a private checkpoint repo | unset |
 | `LAYA_DEVICE` | `auto` / `cpu` / `cuda` | `auto` |
 | `SPOT_AMP` | `1` = fp16 autocast on GPU, `0` = fp32 | `1` |
 | `LOGS_DATABASE_URL` | optional: log every call to `app.model_calls` (system=`system1`) | unset (no logging) |
