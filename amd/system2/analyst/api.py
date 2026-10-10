@@ -73,9 +73,20 @@ def check_key(key: str) -> None:
                            "whitespace; %s (the key is never logged)" % (MIN_KEY_LEN, why))
 
 
+def resolve_api_key(api_key: Optional[str] = None) -> str:
+    """Resolve the shared factory/launcher environment contract or explicit injection."""
+    if api_key is None:
+        canonical = os.environ.get("SYSTEM2_API_KEY")
+        alias = os.environ.get("AMD_API_KEY")
+        if canonical is not None and alias is not None and canonical != alias:
+            raise RuntimeError("SYSTEM2_API_KEY and AMD_API_KEY disagree (keys are never logged)")
+        api_key = canonical if canonical is not None else (alias or "")
+    check_key(api_key)
+    return api_key
+
+
 def create_app(api_key: Optional[str] = None, fixtures_dir: Path = FIXTURES) -> FastAPI:
-    key = api_key if api_key is not None else os.environ.get("AMD_API_KEY", "")
-    check_key(key)
+    key = resolve_api_key(api_key)
     expected = key.encode("ascii")
 
     # No /docs, /redoc or /openapi.json: the committed schema/*.json files are the published contract, and the

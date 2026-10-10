@@ -24,6 +24,29 @@ def request_body():
                         "suggested_action": "DISPATCH_TECHNICIAN", "question": "What needs attention?"}}
 
 
+@pytest.mark.parametrize("canonical,alias", [(KEY, None), (None, KEY), (KEY, KEY)])
+def test_factory_resolves_key_environment(monkeypatch, canonical, alias):
+    for name, value in (("SYSTEM2_API_KEY", canonical), ("AMD_API_KEY", alias)):
+        monkeypatch.delenv(name, raising=False)
+        if value is not None:
+            monkeypatch.setenv(name, value)
+    with TestClient(create_app()) as client:
+        response = client.post("/v1/assess", json=request_body(), headers={"X-API-Key": KEY})
+    assert response.status_code == 200
+
+
+def test_factory_rejects_conflict_without_disclosing_keys(monkeypatch):
+    other = "other-key-0123456789"
+    monkeypatch.setenv("SYSTEM2_API_KEY", KEY)
+    monkeypatch.setenv("AMD_API_KEY", other)
+    with pytest.raises(RuntimeError, match="disagree") as error:
+        create_app()
+    assert KEY not in str(error.value) and other not in str(error.value)
+    # An explicitly injected key remains independent of process environment.
+    with TestClient(create_app(api_key=KEY)) as client:
+        assert client.get("/health").status_code == 200
+
+
 def test_backend_equipment_request():
     client = TestClient(create_app(api_key=KEY))
     r = client.post("/v1/assess", json=request_body(), headers={"X-API-Key": KEY})

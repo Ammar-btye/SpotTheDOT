@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import uvicorn  # noqa: E402
 
-from analyst.api import FIXTURES, check_key, create_app  # noqa: E402
+from analyst.api import FIXTURES, resolve_api_key, create_app  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
@@ -31,14 +31,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    canonical = os.environ.get("SYSTEM2_API_KEY")
-    alias = os.environ.get("AMD_API_KEY")
-    if canonical is not None and alias is not None and canonical != alias:
-        print("ERROR: SYSTEM2_API_KEY and AMD_API_KEY disagree (keys are never logged)", file=sys.stderr)
-        sys.exit(2)
-    key = canonical if canonical is not None else (alias or "")
     try:
-        check_key(key)                                    # same rule as create_app; the message never has the key
+        key = resolve_api_key()
     except RuntimeError as e:
         print("ERROR: %s" % e, file=sys.stderr)
         sys.exit(2)
