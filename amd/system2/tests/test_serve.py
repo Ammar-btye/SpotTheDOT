@@ -16,7 +16,7 @@ import httpx  # noqa: E402
 import pytest  # noqa: E402
 
 from analyst.api import FIXTURES, KEY_HEADER  # noqa: E402
-from analyst.contract import AssessResponse  # noqa: E402
+from analyst.backend_contract import BackendAssessResponse as AssessResponse  # noqa: E402
 from scripts.serve import build_parser  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,7 +34,7 @@ def _free_port() -> int:
 
 
 def _env(key=None) -> dict:
-    env = {k: v for k, v in os.environ.items() if k != "AMD_API_KEY"}
+    env = {k: v for k, v in os.environ.items() if k not in {"AMD_API_KEY", "SYSTEM2_API_KEY", "SYSTEM2_HOST", "SYSTEM2_PORT"}}
     if key is not None:
         env["AMD_API_KEY"] = key
     return env
@@ -43,7 +43,25 @@ def _env(key=None) -> dict:
 def test_default_host_is_loopback():
     args = build_parser().parse_args([])
     assert args.host == "127.0.0.1"
-    assert args.port == 8000
+    assert args.port == 8083
+
+
+def test_environment_defaults_and_cli_override(monkeypatch):
+    monkeypatch.setenv("SYSTEM2_HOST", "0.0.0.0")
+    monkeypatch.setenv("SYSTEM2_PORT", "8100")
+    args = build_parser().parse_args([])
+    assert (args.host, args.port) == ("0.0.0.0", 8100)
+    args = build_parser().parse_args(["--host", "127.0.0.1", "--port", "8083"])
+    assert (args.host, args.port) == ("127.0.0.1", 8083)
+
+
+def test_conflicting_keys_fail_closed():
+    env = _env(TEST_KEY)
+    env["SYSTEM2_API_KEY"] = "different-test-key-0123456789"
+    r = subprocess.run([sys.executable, str(SERVE)], env=env, capture_output=True, text=True, timeout=30)
+    assert r.returncode == 2 and "disagree" in r.stderr
+    assert TEST_KEY not in r.stdout + r.stderr
+    assert env["SYSTEM2_API_KEY"] not in r.stdout + r.stderr
 
 
 def test_serve_refuses_without_key():
@@ -75,9 +93,9 @@ def test_serve_refuses_unusable_key(bad):
 def test_serve_end_to_end():
     port = _free_port()
     base = "http://127.0.0.1:%d" % port
-    req = json.loads((FIXTURES / "equipment.json").read_text(encoding="utf-8"))["request"]
+    req = json.loads((FIXTURES / "backend" / "equipment.json").read_text(encoding="utf-8"))["request"]
     proc = subprocess.Popen([sys.executable, str(SERVE), "--port", str(port), "--log-level", "warning"],
-                            env=_env(TEST_KEY), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                            env={**_env(), "SYSTEM2_API_KEY": TEST_KEY}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         health = None
         deadline = time.monotonic() + 20
@@ -94,8 +112,8 @@ def test_serve_end_to_end():
         ok = httpx.post(base + "/v1/assess", json=req, headers={KEY_HEADER: TEST_KEY}, timeout=10)
         assert ok.status_code == 200, ok.text
         body = AssessResponse.model_validate(ok.json())
-        assert body.meta.model == "stub"
-        assert body.flag_id == req["flag"]["flag_id"]
+        assert body.model == "stub"
+        assert body.answer and body.evidence
 
         anon = httpx.post(base + "/v1/assess", json=req, timeout=10)
         assert anon.status_code == 401
