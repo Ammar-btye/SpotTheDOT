@@ -33,6 +33,11 @@ OBJECT_FIELDS = frozenset({"mission", "asset", "location", "validator", "true_he
 LIST_FIELDS = frozenset({"readings", "anomalies", "actions", "operator_acks", "reasons"})
 
 
+def _finite_number(value) -> bool:
+    # Integers are finite without a lossy float conversion (which can overflow).
+    return type(value) is int or (type(value) is float and math.isfinite(value))
+
+
 def _evidence_object(obj: dict, resolved: dict[str, str]) -> dict:
     identifier = obj.get("id")
     if identifier is not None and (not isinstance(identifier, str) or not identifier.strip()):
@@ -45,7 +50,7 @@ def _evidence_object(obj: dict, resolved: dict[str, str]) -> dict:
             if isinstance(value, str) and value.strip():
                 values[key] = value.strip()
         elif key in NUMBER_FIELDS:
-            if value is not None and (type(value) not in (int, float) or not math.isfinite(value)):
+            if value is not None and not _finite_number(value):
                 raise ValueError("%s must be a finite number or null" % key)
             if value is not None:
                 values[key] = value
@@ -68,7 +73,7 @@ def _evidence_object(obj: dict, resolved: dict[str, str]) -> dict:
                 values[key] = [n for n in nested if n]
         elif key in ("safe_band", "ci95_pct"):
             if (not isinstance(value, list) or len(value) != 2 or
-                    any(v is not None and (type(v) not in (int, float) or not math.isfinite(v)) for v in value)):
+                    any(v is not None and not _finite_number(v) for v in value)):
                 raise ValueError("%s must be a numeric pair" % key)
             if any(v is not None for v in value):
                 values[key] = value

@@ -60,3 +60,17 @@ def test_consumed_types(field, value):
     body[field] = value
     c = TestClient(create_app(api_key=KEY))
     assert c.post("/v1/assess", json=body, headers={"X-API-Key": KEY}).status_code == 422
+
+
+@pytest.mark.parametrize("field,value", [("value", 10**400), ("safe_band", [10**400, None]),
+                                        ("ci95_pct", [-10**400, 10**400])])
+@pytest.mark.parametrize("fact", [None, "Valid supplied text"])
+def test_huge_finite_integers_do_not_crash(field, value, fact):
+    item = {"id": "F1", field: value}
+    if fact is not None:
+        item["fact"] = fact
+    body = {"flag_id": 1, "flag": {}, "context": {"allowed_actions": ["MONITOR"], "facts": [item]}}
+    with TestClient(create_app(api_key=KEY), raise_server_exceptions=False) as client:
+        response = client.post("/v1/assess", json=body, headers={"X-API-Key": KEY})
+    assert response.status_code == 200, response.text
+    assert response.json()["insufficient_context"] is False
