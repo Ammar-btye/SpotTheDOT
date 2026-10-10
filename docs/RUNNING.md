@@ -150,6 +150,12 @@ E2E_DATABASE_URL=$DATABASE_URL backend/.venv/bin/python scripts/e2e.py
 `spot_mcp_user` with those passwords. If Neon refuses `CREATE ROLE`, create the users in the Neon console instead,
 then re-run. Make a Neon branch before any `reset`.
 
+### Backend on Vercel (no Docker)
+The backend also deploys as its own Vercel project (Root Directory `backend/`); steps, env vars and checks are in
+`backend/README.md` "Deploy on Vercel". Run `python db/setup.py migrate` against Neon first (`010_replay_runs.sql`).
+On Vercel the replay is `REPLAY_MODE=stepped`: after `POST /api/v1/replay/start`, something must call
+`POST /api/v1/replay/step` in a loop (contract "Serverless deployment and stepped replay"). Docker is unchanged.
+
 ## Timeouts and keys (how the layers nest)
 Each layer gives up before its caller does, so the caller always gets an answer it can store:
 
@@ -174,7 +180,7 @@ deadline. `/v1/ask` has its own 30 s (`ASK_DEADLINE_S`, at most 4 tool calls).
 | `ORCHESTRATOR_API_KEY` | `X-API-Key` | backend -> orchestrator (>= 16 chars; refuses to start without one) |
 | `LITELLM_MASTER_KEY` | `Authorization: Bearer` | system2 (`SYSTEM2_LLAMA_API_KEY`), orchestrator (`GATEWAY_KEY`) -> gateway (`sk-`, >= 16 chars) |
 | `VISION_API_KEY` | `X-API-Key` | orchestrator -> vision (required, >= 16 chars; refuses to start without one) |
-| `MCP_AUTH_TOKEN` | `Authorization: Bearer` | backend, orchestrator -> mcp (optional) |
+| `MCP_AUTH_TOKEN` | `Authorization: Bearer` | backend, orchestrator -> mcp (optional; required by the Vercel deploy) |
 
 ## Useful commands
 ```bash
