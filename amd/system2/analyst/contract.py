@@ -212,6 +212,9 @@ class Explanation(_Model):
         if self.insufficient_context and self.recommended_action != "manual_review":
             raise ValueError("insufficient context must recommend 'manual_review', got %r"
                              % self.recommended_action)  # no LLM runs on insufficient context (PKT-04)
+        if self.insufficient_context and (self.evidence or self.confidence != "low"):
+            raise ValueError("insufficient context carries no evidence and confidence 'low', got %d evidence / %r"
+                             % (len(self.evidence), self.confidence))  # a half-run model must not pass (PKT-04)
         return self
 
 

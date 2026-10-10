@@ -93,7 +93,8 @@ def test_insufficient_consistent_accepted():
     d = _resp()
     d["packet"]["incidents"] = []
     d["packet"]["missing"] = ["incidents"]
-    d["explanation"].update(evidence=[], insufficient_context=True, recommended_action="manual_review")
+    d["explanation"].update(evidence=[], insufficient_context=True, recommended_action="manual_review",
+                            confidence="low")
     AssessResponse.model_validate(d)
 
 
@@ -107,7 +108,20 @@ def test_response_flag_id_mismatch_rejected():
 
 def test_insufficient_requires_manual_review():
     e = _resp()["explanation"]
-    e.update(evidence=[], insufficient_context=True)          # still dispatch_technician
+    e.update(evidence=[], insufficient_context=True, confidence="low")     # still dispatch_technician
+    _bad(Explanation, e)
+
+
+def test_insufficient_carries_no_evidence():
+    e = _resp()["explanation"]
+    e.update(insufficient_context=True, recommended_action="manual_review", confidence="low")   # 3 evidence items
+    _bad(Explanation, e)
+
+
+@pytest.mark.parametrize("conf", ["med", "high"])
+def test_insufficient_confidence_low(conf):
+    e = _resp()["explanation"]
+    e.update(evidence=[], insufficient_context=True, recommended_action="manual_review", confidence=conf)
     _bad(Explanation, e)
 
 
