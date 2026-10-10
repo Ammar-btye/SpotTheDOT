@@ -96,6 +96,8 @@ make down      # or `make wipe` to drop the database volume too
   Check with `curl localhost:8082/v1/model`: it should show `fine_tuned: true`.
 
 ## Mode 2: `hybrid`: models native on the AMD GPU box
+The current SSH-reachable box (Radeon Pro W7900D, gfx1100, 48 GB; `ssh spot-amd`): specs, proxy, the Hugging Face
+block and the model-copy workaround are in `docs/AMD-GPU.md`.
 The AMD Radeon Cloud Jupyter VMs have no root and can't run Docker. Run `system1` and `embed` there natively (see
 `amd/system1/service/README.md` "Native venv" and `amd/embed/README.md` "Run on the AMD VM"). Run `db`, `db-init`,
 `mcp` and `backend` here in Docker.

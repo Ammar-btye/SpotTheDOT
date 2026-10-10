@@ -20,7 +20,8 @@ System map: `docs/ARCHITECTURE.md`. How to run it: `docs/RUNNING.md`. Current go
   the same change, plus the ports table in `docs/backend-services-contract.md`, the header comment listing services,
   and `docs/RUNNING.md`. Never add a second compose file; use profiles inside the unified one.
 - GPU services take a `TORCH_VARIANT` build arg (`cpu` | `rocm-gfx1151` | `rocm-gfx1201`). The AMD Radeon Cloud
-  Jupyter VMs have no root and can't run Docker, so there the same code runs natively in a venv.
+  Jupyter VMs have no root and can't run Docker, so there the same code runs natively in a venv. The SSH box
+  (`ssh spot-amd`) is a W7900D (gfx1100) with ROCm torch in `/opt/venv`; see `docs/AMD-GPU.md`.
 - Services talk over HTTP using the contracts in `docs/` (e.g. `docs/system2-rag-contract.md`); change the contract first.
 
 ## Context protocol
