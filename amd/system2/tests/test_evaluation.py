@@ -484,3 +484,104 @@ def test_evaluate_cases_rejects_runners_that_see_different_packets():
     cases = tuple(c for c in CASES if c.case_id == 'kit-equipment')
     with pytest.raises(ValueError, match='packet'):
         ev.evaluate_cases(cases, [ev.TemplateRunner(), Tampering()], ev.EvalConfig())
+
+
+# ── documented offline workflow and phase invariants (task 2) ────────────────────────────────
+
+README = SYS2 / 'README.md'
+UV = 'uv run --no-project --with-requirements requirements.txt python '
+PHASE_INVARIANTS = {   # TEST-01: grounding, output schema, packet leakage, no holdout few-shots, eval harness
+    'test_dataset_template.py': ('test_recursive_leakage_rejected', 'test_bad_provenance_and_future_facts_rejected',
+                                 'test_holdouts_match_system1_default_fold'),
+    'test_save_packets.py': ('test_no_holdout_override_and_seed_import_exclusive',),
+    'test_grounding.py': ('test_saved_request_template_passes_and_mutation_fails',
+                          'test_schema_ids_and_actions_fail_deterministically'),
+    'test_pipeline.py': ('test_two_failures_return_checked_template_fallback',
+                         'test_insufficient_packet_short_circuits_without_generator_calls'),
+    'test_generation.py': ('test_fewshot_loader_rejects_holdout_dataset',
+                           'test_current_dev_case_never_appears_as_its_own_fewshot',
+                           'test_schema_enums_are_current_packet_only_never_fewshot_ids'),
+    'test_generation_contract.py': ('test_inconsistent_path_or_insufficiency_rejected_by_model_and_schema',
+                                    'test_schema_drift_check_passes'),
+    'test_evaluation.py': ('test_both_runners_score_identical_six_cases_over_http',
+                           'test_tampered_or_leaking_dataset_rejected_before_any_call'),
+}
+
+
+def documented(script: str) -> list:
+    """Every README command line of the form `uv run ... python scripts/<script> ...`, as argument lists."""
+    import shlex
+    found = []
+    for line in README.read_text(encoding='utf-8').splitlines():
+        line = line.strip()
+        if line.startswith(UV + 'scripts/' + script):
+            found.append(shlex.split(line[len(UV):])[1:])
+    assert found, 'README must document `%sscripts/%s ...`' % (UV, script)
+    return found
+
+
+def override(args: list, flag: str, value: str) -> list:
+    out, skip = [], False
+    for i, a in enumerate(args):
+        if skip:
+            skip = False
+            continue
+        if a == flag:
+            skip = True
+            continue
+        out.append(a)
+    return out + [flag, value]
+
+
+def test_phase_invariant_suites_collect():
+    files = [str(SYS2 / 'tests' / name) for name in PHASE_INVARIANTS]
+    r = subprocess.run([sys.executable, '-m', 'pytest', '-p', 'no:cacheprovider', '--collect-only', '-q', *files],
+                       capture_output=True, text=True, timeout=120, cwd=str(ROOT))
+    assert r.returncode == 0, r.stdout[-2000:] + r.stderr[-2000:]
+    nodes = [line.split('::', 1) for line in r.stdout.splitlines() if '::' in line]
+    for name, required in PHASE_INVARIANTS.items():
+        tests = {t.split('[')[0] for f, t in nodes if f.endswith('/' + name)}
+        assert tests, '%s collected no tests' % name
+        missing = [t for t in required if t not in tests]
+        assert not missing, '%s lost invariant tests %s' % (name, missing)
+
+
+def test_documented_seed_command_reproduces_checked_in_packets(tmp_path):
+    seeds = [a for a in documented('save_packets.py') if '--seed' in a]
+    assert seeds, 'README must document save_packets.py --seed'
+    out = tmp_path / 'dev_packets.json'
+    script = str(SYS2 / 'scripts/save_packets.py')
+    r = subprocess.run([sys.executable, script, *override(seeds[0], '--output', str(out))],
+                       capture_output=True, text=True, timeout=120, cwd=str(SYS2))
+    assert r.returncode == 0, r.stderr
+    assert out.read_bytes() == DATA.read_bytes()
+
+
+def test_documented_template_command_runs_offline(tmp_path):
+    cmds = [a for a in documented('evaluate.py') if a[a.index('--runner') + 1] == 'template']
+    assert cmds, 'README must document the template-only evaluate.py command'
+    args = cmds[0]
+    assert '--model-url' not in args and '--dataset' not in args      # default approved data, no network
+    out = tmp_path / 'template'
+    r = evaluate(*override(args, '--out-dir', str(out)))
+    assert r.returncode == 0, r.stderr
+    m = metrics(out)
+    assert list(m['runners']) == ['template'] and m['measurement']['endpoint_loopback'] is None
+    assert m['identity']['dataset']['content_hash'] == raw_dataset()['manifest']['content_hash']
+
+
+def test_documented_model_command_uses_approved_data_and_common_packets(server, tmp_path):
+    http, url = server
+    cmds = [a for a in documented('evaluate.py') if '--model-url' in a]
+    assert cmds, 'README must document an evaluate.py command with --model-url'
+    args = cmds[0]
+    assert args[args.index('--runner') + 1] == 'both'
+    assert '--dataset' not in args or args[args.index('--dataset') + 1] == 'data/dev_packets.json'
+    out = tmp_path / 'model'
+    r = evaluate(*override(override(args, '--model-url', url), '--out-dir', str(out)))   # fake HTTP, not a measurement
+    assert r.returncode == 0, r.stderr
+    m = metrics(out)
+    assert m['comparison']['packet_hashes_match'] is True and m['comparison']['case_ids'] == CASE_IDS
+    by = by_key(records(out))
+    assert all(by[('template', c)]['packet_hash'] == by[('model', c)]['packet_hash'] for c in CASE_IDS)
+    assert len(http.requests) == len(SUFFICIENT)
