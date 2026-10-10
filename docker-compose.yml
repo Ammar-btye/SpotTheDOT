@@ -14,6 +14,7 @@
 # backend    8000  local, hybrid, neon      FastAPI dashboard API (/api/v1, /docs). ADMIN_TOKEN (header
 #                                           X-Admin-Token) guards /ops, /replay, POST /events; CORS_ORIGINS only
 # system2    8083  local, hybrid, neon, system2  Authenticated packet-grounded stub (model=stub), no retrieval.
+#                                           Kit mounted read-only at /app/kit (SPOT_KIT_DIR) for grounding.
 #
 # Profiles:
 #   local   everything in Docker on CPU (testing; Laya ~3-8 s per event, embedding ~2.3 s per query)
@@ -146,7 +147,9 @@ services:
       SYSTEM2_API_KEY: ${SYSTEM2_API_KEY:-}
       SYSTEM2_HOST: 0.0.0.0
       SYSTEM2_PORT: "8083"
+      SPOT_KIT_DIR: /app/kit   # entity catalog + saved-packet row checks (offline grounding modules)
     ports: ["${BIND_ADDR:-127.0.0.1}:8083:8083"]
+    volumes: ["./amd/system1/data/kit:/app/kit:ro"]
     # Non-root runtime and healthcheck are inherited from the image.
 
   # ── application ────────────────────────────────────────────────────────────────────────────────

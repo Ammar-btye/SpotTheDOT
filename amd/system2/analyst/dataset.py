@@ -1,4 +1,8 @@
-"""Fail-closed offline saved-case approval against checked-in kit sources."""
+"""Fail-closed offline saved-case approval against checked-in kit sources.
+
+Kit rows come from paths.kit_dir() (SPOT_KIT_DIR or the checked-in kit), the same source the grounding entity catalog
+uses; a different kit fails the row-hash checks. Static passages and the seed export need the repository checkout.
+"""
 from __future__ import annotations
 
 import csv
@@ -10,9 +14,7 @@ from pathlib import Path
 
 from .backend_contract import BackendAssessRequest
 from .packet import normalize_packet
-
-ROOT = Path(__file__).resolve().parents[3]
-KIT = ROOT / 'amd/system1/data/kit'
+from .paths import kit_dir, repo_root
 POLICY_VERSION = 'saved-kit-fold2-asof-v1'
 HOLDOUT_MISSIONS = frozenset({'M006', 'M009', 'M012', 'M013', 'M017', 'M018', 'M019', 'M020', 'M023'})
 CATEGORIES = frozenset({'equipment', 'robot_health', 'navigation', 'data_quality', 'mission', 'insufficient_context'})
@@ -35,11 +37,21 @@ def content_hash(value) -> str:
     return hashlib.sha256(canonical_bytes(value)).hexdigest()
 
 
+def _repo() -> Path:
+    root = repo_root()
+    if root is None:
+        raise ValueError('repository checkout required (static passages, seed export)')
+    return root
+
+
 def source_tables() -> dict:
-    tables = {}
-    for table, key in KEYS.items():
-        with (KIT / (table + '.csv')).open(encoding='utf-8', newline='') as stream:
-            tables[table] = {r[key]: r for r in csv.DictReader(stream)}
+    kit, tables = kit_dir(), {}
+    try:
+        for table, key in KEYS.items():
+            with (kit / (table + '.csv')).open(encoding='utf-8', newline='') as stream:
+                tables[table] = {r[key]: r for r in csv.DictReader(stream)}
+    except OSError as exc:
+        raise ValueError('kit source tables unavailable') from exc
     return tables
 
 
@@ -138,7 +150,10 @@ def _check_item(item, as_of, tables):
         if set(provenance) != {'kind', 'path', 'source_hash'} or provenance['path'] not in {
             'amd/system1/triage/policy.py', 'docs/backend-services-contract.md'}:
             raise ValueError('unknown static passage source')
-        source = (ROOT / provenance['path']).read_bytes()
+        try:
+            source = (_repo() / provenance['path']).read_bytes()
+        except OSError as exc:
+            raise ValueError('static passage source unavailable') from exc
         if hashlib.sha256(source).hexdigest() != provenance['source_hash'] or not isinstance(item['text'], str) or not item['text'].strip() or item['text'] not in source.decode('utf-8'):
             raise ValueError('static passage does not match source')
     else:
@@ -297,16 +312,17 @@ def load_dataset(path: str | Path) -> tuple[SavedCase, ...]:
 def seed_dataset() -> dict:
     """Deterministic offline export, separate from backend's runtime retrieval."""
     import sys
-    sys.path.insert(0, str(ROOT / 'amd/system1'))
-    sys.path.insert(0, str(ROOT / 'amd/mcp'))
+    root = _repo()
+    sys.path.insert(0, str(root / 'amd/system1'))
+    sys.path.insert(0, str(root / 'amd/mcp'))
     from triage.kit import load_kit
     from triage.events import action_event
     from triage.policy import label_action
     from spot_mcp import domain
 
-    kit = load_kit(KIT)
+    kit = load_kit(kit_dir())
     tables = source_tables()
-    if domain._POLICY_PATH.resolve() != (ROOT / 'amd/system1/triage/policy.py').resolve():
+    if domain._POLICY_PATH.resolve() != (root / 'amd/system1/triage/policy.py').resolve():
         raise ValueError('seed export requires the checked-in policy, not an environment override')
     vocabulary = domain.ALLOWED_ACTIONS
     selected = {}

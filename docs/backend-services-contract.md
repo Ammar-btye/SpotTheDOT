@@ -176,6 +176,9 @@ the next `/explain` retries System 2 (and replaces it on success); when unset, t
   with MANUAL_REVIEW, appended internally without mutating caller context. Each citation resolves to actual
   supplied content. X-API-Key authorization runs before parsing (401 for missing/wrong keys).
   Legacy Phase 1 fixture models remain offline examples and do not define this HTTP contract.
+- System 2 container env (ADDED 2026-10-10): `SYSTEM2_API_KEY` (required, X-API-Key secret), `SYSTEM2_HOST` /
+  `SYSTEM2_PORT` (`0.0.0.0` / `8083` in the image), `SPOT_KIT_DIR` (`/app/kit`; compose mounts
+  `amd/system1/data/kit` read-only there for the grounding entity catalog and saved-packet row checks).
 - System 2 request the backend sends: `POST /v1/assess {"flag_id", "request_id", "flag", "event", "reasons":
   [detail strings], "context": <packet from GET /flags/{id}/context>}`; it accepts `reasoning` or R3's
   `evidence[{claim, ids}]`. Optional `POST /v1/debrief {"mission_id", "facts"}` → `{"summary",

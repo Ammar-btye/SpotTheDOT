@@ -48,11 +48,12 @@ from .backend_contract import BackendAction, BackendAssessRequest, BackendAssess
 from .dataset import SavedCase, content_hash, validate_dataset
 from .grounding import check_assessment, default_catalog
 from .packet import PreparedPacket, normalize_packet
+from .paths import repo_root
 from .pipeline import AssessmentRun, PipelineConfig, _template, run_pipeline
 
 HARNESS_VERSION = 'system2-eval-2026-10-10.1'
-ROOT = Path(__file__).resolve().parents[1]       # amd/system2
-REPO = ROOT.parents[1]
+ROOT = Path(__file__).resolve().parents[1]       # amd/system2 (/app in the image)
+REPO = repo_root()                               # None outside a checkout: code revision is then null
 DEFAULT_DATASET = ROOT / 'data' / 'dev_packets.json'
 DEFAULT_SEED = 20261010
 GROUNDING_LABEL = 'mechanical consistency with cited packet content (not entailment, not correctness)'
@@ -176,6 +177,9 @@ def is_loopback(url: Optional[str]) -> Optional[bool]:
 
 def code_revision() -> dict:
     """HEAD commit and whether amd/system2 sources differ from it (results/ excluded); nulls when git is absent."""
+    if REPO is None:
+        return {'revision': None, 'dirty': None}
+
     def git(*args):
         return subprocess.run(['git', '-C', str(REPO), *args], capture_output=True, text=True, timeout=10,
                               check=True).stdout

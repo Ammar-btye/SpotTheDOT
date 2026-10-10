@@ -13,7 +13,7 @@ header table too) and this page. Ports and contracts are in `docs/backend-servic
 | `system1` | 8082 | local, models | `amd/system1/service/` | Laya. `TORCH_VARIANT` build arg. Same `hf-cache` volume. Fine-tuned checkpoints are mounted at `/models/checkpoints`. |
 | `mcp` | 8090 | local, hybrid, neon | `amd/mcp/` | Logs in as `spot_mcp_user` (in `spot_mcp_reader`: read-only, plus INSERT on `app.*`). |
 | `backend` | 8000 | local, hybrid, neon | `backend/` | Logs in as `spot_app_user` (in `spot_app`). API docs at http://localhost:8000/docs. `ADMIN_TOKEN` (header `X-Admin-Token`) guards `/ops/*`, `/replay/*` and `POST /events*`; CORS allows `CORS_ORIGINS` only (default `http://localhost:3000`); `REQUEST_DEADLINE_S` (45) bounds `/flags/{id}/context` and `/explain`. |
-| `system2` | 8083 | local, hybrid, neon, system2 | `amd/system2/` | Non-root authenticated packet-grounded stub (`model: stub`), healthcheck inherited from image. Backend supplies context; no MCP/database access. |
+| `system2` | 8083 | local, hybrid, neon, system2 | `amd/system2/` | Non-root authenticated packet-grounded stub (`model: stub`), healthcheck inherited from image. Backend supplies context; no MCP/database access. The image includes `data/` (approved saved packets); the kit is mounted read-only at `/app/kit` (`SPOT_KIT_DIR`). |
 
 Published ports bind to `127.0.0.1` by default (`BIND_ADDR`). Inside the network the services use service names
 (`http://system1:8082`).
@@ -139,5 +139,7 @@ ssh -L 8083:127.0.0.1:8083 <box>
 ```
 
 `/health` is public; `POST /v1/assess` requires `X-API-Key` and accepts the request in `amd/system2/fixtures/backend/equipment.json` under `request`. Missing authentication returns 401. Native defaults are `127.0.0.1:8083`; `SYSTEM2_HOST`/`SYSTEM2_PORT` and `--host`/`--port` override them. Docker binds all container interfaces, while published ports bind `${BIND_ADDR:-127.0.0.1}`.
+
+The offline grounding, dataset and evaluation modules read the sponsor kit from `SPOT_KIT_DIR` (default: the checked-in `amd/system1/data/kit` when run from the repo). The image sets `SPOT_KIT_DIR=/app/kit` and compose mounts `./amd/system1/data/kit` there read-only; a plain `docker run` needs `-v "$PWD/amd/system1/data/kit:/app/kit:ro"` before those modules can load. The live stub does not read the kit.
 
 Local, hybrid and neon include the stub. Backend defaults `SYSTEM2_URL` to `http://system2:8083`; an explicit remote URL overrides it (for a host SSH tunnel use `http://host.docker.internal:18083`). Backend retains its template fallback when the service is unavailable or rejects the key. System 2 receives the prepared MCP packet from backend and does not retrieve packets itself. `model: stub` is deterministic packet evidence, not live LLM inference.

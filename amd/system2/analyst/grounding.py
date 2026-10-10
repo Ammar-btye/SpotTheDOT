@@ -23,22 +23,17 @@ import csv
 from dataclasses import dataclass
 from decimal import Decimal
 from functools import lru_cache
-import os
 from pathlib import Path
 import re
 from typing import Iterable, List, Optional, Tuple
 import unicodedata
 
 from .packet import PreparedPacket
+from .paths import kit_dir  # noqa: F401  (re-exported; SPOT_KIT_DIR or the checked-in kit)
 
-ROOT = Path(__file__).resolve().parents[3]
 GENERATION_FIELDS = ('evidence', 'answer', 'question', 'recommended_action', 'confidence', 'insufficient_context')
 CONFIDENCE = ('high', 'medium', 'low')
 VALUE_CHARS = 80  # stored offending-token length; model output is untrusted and never becomes evidence
-
-
-def kit_dir() -> Path:
-    return Path(os.environ.get('SPOT_KIT_DIR', ROOT / 'amd' / 'system1' / 'data' / 'kit'))
 
 
 # ── entity catalog ───────────────────────────────────────────────────────────────────────────
