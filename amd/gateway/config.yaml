@@ -1,0 +1,74 @@
+# SPOT model gateway (LiteLLM proxy, :4000). One OpenAI-compatible endpoint, four aliases.
+# Start it with `python serve.py`, which fills defaults and derives every GATEWAY_* variable below from the
+# plain env vars (LLAMA_URL, VISION_LLAMA_URL, SYSTEM1_URL, EMBED_URL, *_TIMEOUT_S); see README.md.
+#
+# alias           upstream                                   route                       timeout
+# system2         llama-server text (Qwen3.5-9B)             POST {LLAMA_URL}/v1/chat/completions      15 s
+# system2-vision  llama-server with --mmproj                 POST {VISION_LLAMA_URL}/v1/chat/completions 30 s
+# system1         Laya triage (custom provider laya_provider) POST {SYSTEM1_URL}/v1/predict            10 s
+# embed           embedding service                          POST {EMBED_URL}/v1/embeddings             10 s
+#
+# Retries are 0 everywhere: System 2's checked pipeline already retries once inside its 15 s budget, and a gateway
+# retry would double that. No fallbacks: a failed system2 call must fail loudly (System 2 then uses its checked
+# template), never be silently answered by a different model. No cooldowns: each alias has one deployment, and a
+# cooldown would turn one slow call into minutes of "no deployments available".
+
+model_list:
+  - model_name: system2
+    litellm_params:
+      model: openai/qwen3.5-9b        # llama-server serves one model and ignores the name
+      api_base: os.environ/GATEWAY_SYSTEM2_API_BASE
+      api_key: os.environ/GATEWAY_LLAMA_KEY
+      timeout: os.environ/GATEWAY_SYSTEM2_TIMEOUT_S
+      max_retries: 0
+    model_info: {mode: chat}
+
+  - model_name: system2-vision
+    litellm_params:
+      model: openai/qwen3.5-9b-vision
+      api_base: os.environ/GATEWAY_VISION_API_BASE
+      api_key: os.environ/GATEWAY_LLAMA_KEY
+      timeout: os.environ/GATEWAY_VISION_TIMEOUT_S
+      max_retries: 0
+    model_info: {mode: chat, supports_vision: true}
+
+  - model_name: system1
+    litellm_params:
+      model: laya/laya
+      api_base: os.environ/GATEWAY_SYSTEM1_API_BASE
+      timeout: os.environ/GATEWAY_SYSTEM1_TIMEOUT_S
+      max_retries: 0
+    model_info: {mode: chat}
+
+  - model_name: embed
+    litellm_params:
+      model: openai/Qwen/Qwen3-Embedding-0.6B
+      api_base: os.environ/GATEWAY_EMBED_API_BASE
+      api_key: os.environ/GATEWAY_EMBED_KEY
+      timeout: os.environ/GATEWAY_EMBED_TIMEOUT_S
+      encoding_format: float          # amd/embed rejects base64, which the OpenAI SDK asks for by default
+      max_retries: 0
+    model_info: {mode: embedding}
+
+litellm_settings:
+  drop_params: false                  # response_format json_schema and chat_template_kwargs must reach llama-server
+  num_retries: 0
+  request_timeout: 60                 # outer cap; the per-alias timeouts above are the real budgets
+  telemetry: false
+  custom_provider_map:
+    - {provider: laya, custom_handler: laya_provider.laya_provider}
+
+router_settings:
+  num_retries: 0
+  disable_cooldowns: true
+  routing_strategy: simple-shuffle
+  # System 2 can keep SYSTEM2_MODEL=qwen3.5-9b-q4km (the served name in docs/RUNNING.md): same deployment as
+  # `system2`, so its explanation cache key (which includes the model name) stays valid. Hidden from /v1/models.
+  model_group_alias:
+    qwen3.5-9b-q4km: {model: system2, hidden: true}
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  disable_spend_logs: true
+  disable_error_logs: true
+  store_model_in_db: false

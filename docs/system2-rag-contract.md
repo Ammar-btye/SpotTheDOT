@@ -183,3 +183,140 @@ CREATE TABLE app.job_runs (                -- seed / ingest / replay / fine-tune
 -- indexes: ts DESC on each; (system, ts) on model_calls; (tool, ts) on mcp_tool_calls; (request_id) everywhere
 ```
 `request_id` ties one flag's whole journey together across tables.
+
+## 7. Graph RAG (added 2026-10-10)
+A knowledge graph in plain Neon Postgres: node/edge tables, pgvector on nodes, and multi-hop traversal with
+`WITH RECURSIVE`. **Apache AGE (Cypher) is not available on Neon** (not in its extension list), so there's no
+Cypher; everything is standard SQL. Retrieval: vector + text search find entry nodes → traverse 1–2 hops → return
+connected facts with citation ids.
+
+### Tables (migration `009_graph.sql`)
+```sql
+CREATE TABLE kg_nodes (
+  node_id     text PRIMARY KEY,          -- '<kind>:<key>', e.g. 'asset:HX-204', 'location:WP09', 'failure_type:LOCALIZATION_FAILURE'
+  kind        text NOT NULL CHECK (kind IN ('mission','action','asset','location','environment','action_type',
+                'failure_type','anomaly_type','anomaly','flag','policy_rule','topic','manual','operator_note','explanation')),
+  key         text NOT NULL,             -- the natural id (asset_id, WP id, enum value, doc id...)
+  label       text NOT NULL,             -- human-readable name ("Heat Exchanger 04", "Turbine Hall South")
+  summary     text NOT NULL,             -- one or two sentences of facts about the node; this is what gets embedded
+  props       jsonb NOT NULL DEFAULT '{}',
+  doc_id      text REFERENCES documents(doc_id) ON DELETE SET NULL,   -- document-backed nodes, see "Implemented" below
+  embedding   vector(EMBED_DIM),
+  embed_model text,
+  updated_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE kg_edges (
+  src      text NOT NULL REFERENCES kg_nodes ON DELETE CASCADE,
+  rel      text NOT NULL,                -- see the relation list below
+  dst      text NOT NULL REFERENCES kg_nodes ON DELETE CASCADE,
+  weight   real NOT NULL DEFAULT 1.0,    -- strength (counts/rates for statistical edges)
+  props    jsonb NOT NULL DEFAULT '{}',  -- e.g. {"n": 6, "rate": 0.5}; 'source': 'fk' | 'stat' | 'extract' | 'curated'
+  evidence text,                         -- a citable id (doc_id, anomaly_id, action_id) supporting the edge
+  PRIMARY KEY (src, rel, dst)
+);
+-- indexes: kg_edges (dst), (rel); kg_nodes (kind), GIN trigram on (label) and (key) via pg_trgm
+```
+Directed edges, traversed in both directions.
+
+### Relations
+| rel | src → dst | source |
+|---|---|---|
+| `part_of` | action → mission | fk |
+| `at` | action → location | fk |
+| `inspects` | action → asset | fk |
+| `of_type` | action → action_type; anomaly → anomaly_type | fk |
+| `failed_with` | action → failure_type | fk (failed actions) |
+| `located_at` | asset → location | fk |
+| `has_environment` | location → environment | fk |
+| `raised_on` | anomaly → asset | fk |
+| `during` | anomaly → action | fk |
+| `flags` | flag → action or mission | fk |
+| `triggered` | flag → policy_rule | fk, from `flags.reasons` (policy rules only, not `laya_verdict`/`rules_verdict`) |
+| `annotates` | operator_note → flag | fk (ADDED 2026-10-10, pgvector agent: a note was otherwise only linked by its mentions) |
+| `explains` | explanation → flag | fk (ADDED 2026-10-10, pgvector agent) |
+| `common_at` | failure_type → location; anomaly_type → asset | stat: weight = rate, props n/rate, only if n ≥ 2 |
+| `fails_more_in` | action_type → environment | stat: success rate below the overall rate, props n/rate |
+| `about` | policy_rule → failure_type / anomaly_type / topic | curated from the policy thresholds |
+| `relates_to` | failure_type / anomaly_type / action_type → topic | curated map |
+| `mentions` | manual / operator_note / explanation / anomaly → asset, location, failure_type, anomaly_type, action_type, topic | extract: regex ids (`HX-204`, `WP09`) + a synonym dictionary; weight = hit count |
+
+Topics form a small curated vocabulary that links the Spot User Guide to the data, e.g. `topic:localization`,
+`topic:battery`, `topic:docking`, `topic:communication`, `topic:obstacles`, `topic:thermal`, `topic:acoustic`,
+`topic:gauge`, `topic:visual`, `topic:sensors`, `topic:safety`. Every manual chunk becomes a `manual` node
+(`doc_id` = its document).
+
+### Functions (migration `009_graph.sql`)
+```sql
+-- Entry points by vector similarity (nodes with embeddings).
+match_kg_nodes(query_embedding vector, kinds text[] DEFAULT NULL, match_count int DEFAULT 5, min_similarity real DEFAULT 0.0)
+  RETURNS TABLE (node_id text, kind text, label text, summary text, doc_id text, similarity real)
+
+-- Entry points by name/id text (trigram + exact key match; catches 'HX-204', 'WP09', 'Turbine Hall').
+match_kg_nodes_text(query_text text, kinds text[] DEFAULT NULL, match_count int DEFAULT 5)
+  RETURNS TABLE (node_id text, kind text, label text, summary text, doc_id text, score real)
+
+-- k-hop neighbourhood of seed nodes, both edge directions, cycle-free, best first
+-- (hop ascending, then path weight descending; see "Implemented"). path is the readable chain from the seed.
+graph_neighborhood(seed_ids text[], max_hops int DEFAULT 2, rel_filter text[] DEFAULT NULL,
+                   kind_filter text[] DEFAULT NULL, max_nodes int DEFAULT 40)
+  RETURNS TABLE (node_id text, kind text, label text, summary text, doc_id text, hop int,
+                 via_rel text, via_node text, path text[], weight real, evidence text)
+```
+`max_hops` is capped at 3 inside the function. `spot_mcp_reader` gets SELECT on both tables and EXECUTE on the functions.
+
+**Implemented (pgvector agent, 2026-10-10).** Exact behaviour the MCP server can rely on:
+- **Node ids and documents.** `node_id = '<kind>:<key>'`. Document-backed nodes carry `doc_id` (cite it) and reuse that
+  document's vector: mission `event:mis-M001`, action `event:act-A0001`, anomaly `incident:AN001`, flag
+  `incident:flag-14`, policy_rule `policy:battery_low`, manual `manual:p52-1` (= its node_id), operator_note `note:3`,
+  explanation `explanation:5` (`doc_id` is NULL until ingest has made the document). The other kinds (asset, location,
+  environment, action_type, failure_type, anomaly_type, topic) embed their `summary`.
+- **Edge weights** (one rate-like scale, bigger = stronger): `fk` = 1/n, n = the edges of that rel into the same dst
+  (`props.of`; one of WP05's 43 actions weighs 1/43, an action's own flag 1/1); `stat` `common_at` = rate = n/of;
+  `fails_more_in` = overall rate − rate in that environment (n ≥ 3 actions; props n, rate, overall, failures);
+  `curated` = 1/n, n = that src's targets for the rel (a rule `about` all 8 failure types links each at 0.125);
+  `extract` (`mentions`) = hit count (props hits, terms). Stat edges carry `props.examples` (ids) and `evidence` = the
+  first example's doc id.
+- **`match_kg_nodes`**: like `match_documents`: similarity = 1 − cosine distance; NULL `kinds` = all; NULL
+  `min_similarity` = 0; nodes without a vector are skipped; best first.
+- **`match_kg_nodes_text`**: `score` in [0.3, 1]: **1.0** = exact match of the query on node_id, key or label ignoring
+  case and punctuation (`HX-204`, `hx204`, `asset:HX-204`, `WP09`, `localization failure`); otherwise the best pg_trgm
+  score capped at **0.99**: similarity / word_similarity of the query against label and key (`Turbine Hall` → WP08 and
+  WP09 at 0.99), or a label/alphanumeric key found inside a longer query (strict_word_similarity ≥ 0.75, so
+  `why does HX-204 keep failing in the pipe gallery?` → asset:HX-204 and location:WP05). Below 0.3 is dropped. NULL or
+  blank query → no rows. Action labels contain their asset and WP ids, so `HX-204` returns asset:HX-204 (1.0) and then
+  actions on it (0.99): pass `kinds` to narrow.
+- **`graph_neighborhood`**: seeds that don't exist are ignored; NULL/empty `seed_ids` → no rows. `max_hops` NULL → 2,
+  clamped to 0..3 (0 → no rows). `rel_filter` restricts the edges walked. **`kind_filter` filters the returned rows
+  only**; the walk passes through every kind (so `kind_filter => '{manual,topic}'` from an action still reaches manual
+  chunks via its failure type). `max_nodes` (NULL → 40) applies after `kind_filter`. Seeds are **not** returned as hop 0,
+  but a seed reached from another seed is (hop ≥ 1), so the edge between two seeds still shows. One row per node: its
+  shortest, then strongest path. `via_rel`/`via_node`/`evidence` = the last edge walked (`via_node` is the previous node
+  on the path; the stored edge may point either way). **`weight` = the path's strength**, the product of the edge
+  weights along it (hop 1: the edge's own weight), so a path through a hub ranks below one through a specific fact.
+  `path` alternates node ids and steps, with the direction: `{action:A0061, -failed_with->,
+  failure_type:LOCALIZATION_FAILURE, <-mentions-, manual:p52-1}` (`-rel->` walks src→dst, `<-rel-` dst→src);
+  `array_to_string(path, ' ')` reads as a sentence. Order: hop ascending, weight descending, then semantic kinds
+  (topic, manual, failure_type, anomaly_type, environment, action_type, policy_rule, location, asset, …) before
+  instance kinds (anomaly, flag, mission, action), then node_id. Hop 1 always comes before hop 2, so a hub seed
+  (a location has 10–43 actions) fills `max_nodes` with hop-1 actions: pass `kind_filter` to skip instance kinds.
+- **Timing** (local Postgres, 577 nodes / 1,974 edges): `graph_neighborhood` 2 hops ≈ 2 ms (7 flag-context seeds ≈ 6 ms;
+  worst case 4 hub seeds × 3 hops ≈ 90 ms); `match_kg_nodes_text` ≈ 12 ms (≈ 1 ms with `kinds`); `match_kg_nodes` ≈ 3 ms.
+
+### Build (`db/graph_build.py`; run by `db/job.sh graph`, which `db-init` runs after `ingest`)
+Idempotent:
+- upsert nodes;
+- delete and re-insert the edges with `props->>'source' IN ('fk','stat','extract','curated')` (CHANGED 2026-10-10:
+  `curated` added, so editing the curated maps takes effect; edges with any other source are never touched);
+- delete nodes the build made (`props->>'built_by' = 'graph_build'`) that no longer exist (e.g. a deleted flag);
+- embed node `summary` text via the embedding API (no document prefix), reusing `documents.embedding` for document-backed nodes.
+  Only summaries whose text or `EMBED_MODEL` changed are re-embedded (`props.embedded_hash`); if the embedding
+  service is down the graph is still written and those nodes are embedded on the next run (`--no-embed` skips it).
+All of it is one transaction (readers see the old or the new graph), logged to `app.job_runs` (job `graph`, counts per
+node kind and per rel) and each embedding batch to `app.model_calls`. ~1 s without embedding; ~20 s on CPU to embed the
+~70 summary nodes the first time. Runtime nodes (new operator notes and explanations) are picked up on the next run.
+
+### MCP (`amd/mcp`)
+- `get_flag_context` gains a bounded `graph` section (≤ ~300 tokens): the 1–2-hop neighbourhood of the flag's action, asset, location, failure_type/anomaly_type and triggered rules, with manual/topic links ranked first. Each fact is a readable triple (`WP09 —has_environment→ HIGH_NOISE`) cited by `node_id`/`evidence`. The whole packet stays ≤ 1,500 tokens.
+- New tool `graph_neighborhood(entity, hops=2, k=20)`: `entity` is a node_id, or a name/id resolved with `match_kg_nodes_text` (falling back to vector).
+- New tool `search_graph(query, k=5, hops=1)`: entry nodes by vector + text, then a 1-hop expansion.
+- Both tools are logged in `app.mcp_tool_calls` like the others.

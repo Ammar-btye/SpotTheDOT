@@ -17,6 +17,7 @@ dataset defaults to the approved training packets in data/dev_packets.json; resu
 never headline numbers.
 """
 import argparse
+import os
 from pathlib import Path
 import sys
 import urllib.parse
@@ -70,7 +71,8 @@ def main(argv=None):
         runners = [TemplateRunner()] if args.runner in ('template', 'both') else []
         if wants_model:
             runners.append(ModelRunner(LlamaGenerator(args.model_url, model=args.model, max_tokens=args.max_tokens,
-                                                      timeout_s=args.timeout_s)))
+                                                      timeout_s=args.timeout_s,
+                                                      api_key=os.environ.get('SYSTEM2_LLAMA_API_KEY') or None)))
         stage = 'evaluation run'
         metrics = run_evaluation(dataset, runners, config)
     except ValueError as exc:

@@ -1,0 +1,7 @@
+# Build context is amd/orchestrator. Allowlist: send only what the image COPYs.
+*
+!requirements.txt
+!orchestrator/
+**/__pycache__/
+**/*.pyc
+**/.DS_Store

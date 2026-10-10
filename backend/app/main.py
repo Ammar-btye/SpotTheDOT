@@ -13,6 +13,7 @@ from typing import Optional
 
 import psycopg
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -20,7 +21,7 @@ from fastapi.responses import JSONResponse
 from .config import Settings
 from .db.pool import DatabaseUnavailable
 from .deps import AdminAuthError, Services, build_services
-from .routers import (assets, events, flags, health, insights, locations, missions, ops, replay, search,
+from .routers import (ask, assets, events, flags, health, insights, locations, missions, ops, replay, search,
                       system1)
 from .services.calllog import request_id_var
 from .services.flags import FlagNotFound, RequestDeadlineExceeded
@@ -123,7 +124,9 @@ def create_app(settings: Optional[Settings] = None, services: Optional[Services]
 
     @app.exception_handler(RequestValidationError)
     async def _invalid(request: Request, exc: RequestValidationError):
-        return JSONResponse(status_code=422, content={"error": "invalid_request", "detail": exc.errors(),
+        # custom_encoder: a field_validator's ValueError sits in ctx.error and is not JSON serializable.
+        detail = jsonable_encoder(exc.errors(), custom_encoder={Exception: str})
+        return JSONResponse(status_code=422, content={"error": "invalid_request", "detail": detail,
                                                       "request_id": request_id_var.get()})
 
     @app.exception_handler(Exception)
@@ -132,7 +135,7 @@ def create_app(settings: Optional[Settings] = None, services: Optional[Services]
         return _err(500, "internal_error", "%s: %s" % (type(exc).__name__, exc))
 
     app.include_router(health.router)
-    for r in (events, replay, flags, missions, system1, assets, locations, insights, search, ops):
+    for r in (events, replay, flags, missions, system1, assets, locations, insights, search, ops, ask):
         app.include_router(r.router, prefix="/api/v1")
     return app
 

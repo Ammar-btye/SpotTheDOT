@@ -3,9 +3,10 @@
 This server is where System 2 gets its context. System 2 is the ~9B LLM on the AMD box that explains each confirmed flag to operators. The server reads Neon Postgres and never writes to it:
 
 - **RAG over pgvector** for text: past incidents, asset history, operator notes, Spot manual passages, policy rules and past explanations.
+- **Graph RAG** over a knowledge graph in plain Postgres (`kg_nodes` / `kg_edges`, contract §7): which failures cluster at which waypoint, which action types fail more in which environment, which manual passages cover a failure type.
 - **Plain SQL** for numbers: success rates, battery risk and mission health.
 
-The binding contract is `docs/system2-rag-contract.md`. It defines the tables, `match_documents` / `match_documents_hybrid`, the embedding API and the `app.*` logs.
+The binding contract is `docs/system2-rag-contract.md`. It defines the tables, `match_documents` / `match_documents_hybrid`, the graph functions (§7), the embedding API and the `app.*` logs.
 
 Built on the official MCP Python SDK **2.x** (`mcp.server.mcpserver.MCPServer`). In SDK 2.x, `FastMCP` was renamed to `MCPServer`, and `mcp.server.fastmcp` no longer exists.
 
@@ -15,13 +16,15 @@ The model should call `get_flag_context` first. That one call is usually enough.
 
 | Tool | What it's for |
 |---|---|
-| `get_flag_context(flag_id)` | **Tier 1.** One packet (≤ ~1,500 tokens) holding:<br>• the flag and the rules that fired<br>• the event: the action with its reading vs the safe band, trust, anomaly, asset and waypoint, plus the validator's priority, category and suggested action. For a mission flag, the event is the mission instead.<br>• System 1 predictions<br>• derived facts `F1..Fn`<br>• similar incidents, asset history, manual passages and policy rules<br>• `allowed_actions`, `citation_ids`, `insufficient_context` + `missing`, `gaps`<br>• **the question, last** |
+| `get_flag_context(flag_id)` | **Tier 1.** One packet (≤ ~1,500 tokens) holding:<br>• the flag and the rules that fired<br>• the event: the action with its reading vs the safe band, trust, anomaly, asset and waypoint, plus the validator's priority, category and suggested action. For a mission flag, the event is the mission instead.<br>• System 1 predictions<br>• derived facts `F1..Fn`<br>• `graph`: ≤ ~300 tokens of knowledge-graph triples around the flag (statistics and manual links first)<br>• similar incidents, asset history, manual passages and policy rules<br>• `allowed_actions`, `citation_ids`, `insufficient_context` + `missing`, `gaps`<br>• **the question, last** |
 | `search_similar_incidents(flag_id?, text?, asset_id?, location_id?, k=3)` | Past incidents like this one (hybrid search). The flag's own docs are excluded. |
 | `search_asset_history(asset_id, query?, k=5)` | Events, incidents and notes for one asset. With no query, no similarity cutoff is applied. |
 | `search_spot_manual(query, k=3)` | Spot User Guide passages (vector search). |
 | `search_operator_notes(query, asset_id?, k=5)` | Notes operators wrote on earlier flags. |
 | `search_past_explanations(query, k=3)` | Earlier System 2 outputs, for consistency. |
 | `search_policy(query, k=3)` | The triage rules (`policy:<rule>` docs). |
+| `graph_neighborhood(entity, hops=2, k=20)` | Graph facts around one thing (asset, waypoint, environment, action/failure/anomaly type, rule, topic, manual page). `entity` is a node_id (`location:WP09`) or a name/id (`WP09`, `Turbine Hall South`), resolved by `match_kg_nodes_text`, then by vector. `hops` 1–3, `k` ≤ 30. |
+| `search_graph(query, k=5, hops=1)` | Entry nodes by name/id **and** meaning (merged, deduplicated), then their facts within `hops`. `k` ≤ 10, `hops` 1–3. |
 | `get_flag(flag_id)` | Flag row, reasons, operator acks/notes and any previous explanation. |
 | `get_system1_forecast(action_id)` | Laya's pre-action `will_fail` / `failure_mode` / `anomaly_expected` vs the real outcome, plus its triage answers vs the validator. |
 | `get_action(action_id)` | Action, reading with its safe band (from `policy.py`) and trust, anomalies, asset, waypoint and validator verdict. |
@@ -36,8 +39,18 @@ The model should call `get_flag_context` first. That one call is usually enough.
 - **Row ids:** `flag:12`, `action:A0136`, `reading:R0002`, `anomaly:AN002`, `asset:HX-204`, `location:WP07`, `mission:M014`, `note:<ack_id>`, `explanation:<id>`, `s1:<prediction_id>`, `log:<log_id>`, `stat:<filters>`.
 - **Packet-local facts:** `F1`..`Fn`.
 - **RAG docs:** the `doc_id`s (`incident:AN007`, `manual:p42-1`, `policy:battery_low`...).
+- **Graph facts:** `{"id", "fact", "text"?, "ev"?}`. The `id` is one endpoint's `node_id` (`failure_type:LOCALIZATION_FAILURE`, `environment:HIGH_NOISE`, `topic:docking`), or its doc_id for document-backed nodes (`manual:p42-3`, `note:5`). `ev` is the edge's evidence id when it has one. Every id resolves to a `kg_nodes` row or a `documents` row.
 
 `citation_ids` lists them all, so the client can build the grammar's `ids` enum.
+
+**Graph RAG, how it's built.**
+- **Seeds:** for a flag they are its action, asset, waypoint, failure/anomaly type and up to 4 triggered rules (`<kind>:<key>`). For a mission flag, they are the mission's top failure types and its worst anomaly.
+- **Walks:** two 2-hop `graph_neighborhood` walks run in parallel, one for the structure and one for the linked manual pages and notes. Running them separately means manual chunks can't crowd stats out of the node cap.
+- **Facts:** they are the stored `kg_edges` among the reached nodes (one parameterized SELECT). This catches edges between two seeds, which the traversal's one-row-per-node output can't show.
+- **Ranking:** statistics (`common_at`, `fails_more_in`) come first, then manual links, topics and notes, then other structure. Facts touching this flag's own nodes come first within each tier.
+- **Dedup and merge:** FK facts that the flag/event sections already state are dropped. Facts sharing an endpoint are merged (`Docking —mentions→ battery, docking`).
+- **Budget:** the result is cut to `MCP_GRAPH_TOKEN_BUDGET` (300). When the packet is over 1,500 tokens, RAG tails are trimmed first, then the graph tail (never below 3 facts). flag, event, facts and question are never trimmed.
+- **Degradation:** on a database without migration 009, the packet's `gaps` say `graph unavailable` and the graph tools return `graph_unavailable: true`; neither errors. With the embedding service down, the packet's graph section still works (it needs no embedding) and `search_graph` falls back to name/id matches.
 
 **Safety.**
 - Every parameter is typed and range-checked: the JSON schema checks first, then the service checks again.
@@ -137,3 +150,5 @@ For Claude Desktop, Cursor or other JSON-config clients:
 
 - **`MCP_MIN_SIMILARITY`** (default 0.40): Qwen3-Embedding similarities run on a different scale from older models. Check `mean_top_similarity` in `app.get_mcp_tool_stats()` and run a few junk queries, then set the cutoff between them.
 - **`MCP_PACKET_TOKEN_BUDGET`** (default 1500): when the packet is too big, the lowest-value retrieved items are dropped first, then snippets are shortened.
+- **`MCP_GRAPH_TOKEN_BUDGET`** (default 300): the packet's `graph` section.
+- **`MCP_GRAPH_MIN_SIMILARITY`** (default: `MCP_MIN_SIMILARITY`) is the cutoff for vector entry nodes in the graph tools. **`MCP_GRAPH_TEXT_MIN_SCORE`** (default 0.5) is the cutoff for `match_kg_nodes_text`. An exact name/id scores 1.0; incidental trigram hits on real data score ~0.33–0.37.

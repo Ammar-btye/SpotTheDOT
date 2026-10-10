@@ -9,8 +9,11 @@ Companion to `docs/system2-rag-contract.md` (Neon tables, embedding API, MCP). *
 | System 1: Laya inference | `amd/system1/service/` | 8082 | System 1 service agent |
 | Embedding service | `amd/embed/` | 8081 | pgvector agent |
 | MCP server | `amd/mcp/` | 8090 | MCP agent |
-| System 2 (LLM explainer, `/v1/assess`) | `amd/system2/` (branch `aatif/system2`) | 8083 | teammate |
-| llama-server (System 2's model) | n/a | 8080 | teammate |
+| System 2 (LLM explainer, `/v1/assess`, contract `2026-10-10.backend.2`) | `amd/system2/` | 8083 | teammate |
+| Vision / OCR (code readers, `/v1/vision`, `/v1/ocr`; requires `VISION_API_KEY`; contract `docs/vision-contract.md`) | `amd/vision/` | 8084 | vision agent |
+| Orchestrator (LangGraph: assess + ask graphs; contract `docs/orchestrator-contract.md`) | `amd/orchestrator/` | 8085 | orchestrator agent |
+| Model gateway (LiteLLM: `system1` / `system2` / `system2-vision` / `embed`) | `amd/gateway/` | 4000 | gateway agent |
+| llama-server (System 2's model; the gateway's `LLAMA_URL` upstream, never in compose) | n/a | 8080 (tunnel 18080) | teammate |
 | Postgres + pgvector (local stand-in for Neon) | `db/` | 5433 | pgvector agent |
 
 Inside docker-compose, services reach each other by service name (`http://system1:8082`), never `localhost`.
@@ -97,6 +100,9 @@ Every step logs to `app.*` with one `request_id`.
 | `TRIAGE_DIR` | folder holding the `triage` package | `amd/system1` |
 | `ADMIN_TOKEN` | shared secret for the admin endpoints (header `X-Admin-Token`, see "Admin endpoints"); unset = those endpoints answer 503 | unset |
 | `REQUEST_DEADLINE_S` | overall deadline for `/flags/{id}/context` and `/flags/{id}/explain`, covering every downstream call (see "Request deadline") | `45` |
+| `ORCHESTRATOR_URL` | LangGraph orchestrator (`amd/orchestrator`, :8085). Set -> `/explain` asks it first and `/ask` proxies to it (see "Orchestrator path"); unset -> `/explain` behaves exactly as without it and `/ask` answers 503 | unset |
+| `ORCHESTRATOR_API_KEY` | sent as `X-API-Key` to the orchestrator | unset |
+| `ORCHESTRATOR_TIMEOUT_S` | per-call cap for orchestrator calls; `/explain` also caps it at the deadline minus the reserve (45 - 3 = 42) | `42` |
 | `CORS_ORIGINS` | comma-separated browser origins allowed by CORS (the dashboard's origin; `*` is not the default) | `http://localhost:3000` |
 | `DB_POOL_MAX`, `LOG_REQUESTS` | | `10`, `1` |
 
@@ -121,9 +127,45 @@ per-call timeouts (`MCP_TIMEOUT_S` applies to each of 3 JSON-RPC posts; `SYSTEM2
 
 ### Stored explanations (ADDED 2026-10-10, audit M10)
 `assessments.state`: `DONE` = a System 2 explanation (final; returned from cache unless `refresh=true`).
-`TEMPLATE` = the templated fallback (`model = 'template'`). A `TEMPLATE` row is not final: when `SYSTEM2_URL` is set,
+`TEMPLATE` = the templated fallback (`model = 'template'`), and also (ADDED 2026-10-10, audit A-8 / P-5 for this
+case) a System 2 reply that is System 2's own checked template rather than a model answer: `path` `fallback` or
+`insufficient_context`, or `model` `template`. Such a reply is returned with `source: "system2_template"` and a
+`fallback_reason`, stored `TEMPLATE` and never indexed. (`path: stub` replies are still stored `DONE`.) A `TEMPLATE` row is not final: when `SYSTEM2_URL` is set,
 the next `/explain` retries System 2 (and replaces it on success); when unset, the stored template is returned
 (`cached: true`). Template rows are never indexed as `explanation` RAG docs (RAG contract §4).
+
+### Orchestrator path (ADDED 2026-10-10; additive, opt-in with `ORCHESTRATOR_URL`)
+When `ORCHESTRATOR_URL` is set, `/flags/{id}/explain` asks the orchestrator first (`docs/orchestrator-contract.md`)
+and falls back to the existing path when it is down or has no context. Unset, nothing below applies and `/explain`
+is unchanged.
+- After the cache check, the backend calls `POST {ORCHESTRATOR_URL}/v1/assess {"flag_id", "request_id", "refresh"}`
+  (+ `image_b64`, `image_kind` when the caller sent them) with `X-API-Key: ORCHESTRATOR_API_KEY`, within
+  `min(ORCHESTRATOR_TIMEOUT_S, deadline - reserve)`. The orchestrator's own deadline is `ORCH_DEADLINE_S` = 40 s, so
+  it answers before the backend's 45 s `REQUEST_DEADLINE_S` and leaves time to store the result.
+- Its answer is used when `context_source != "none"` and `answer` is non-empty. The response is the usual
+  `Explanation` plus `orchestrator: {route, route_reasons, trace, system1, vision, elapsed_ms}` (the graph trace
+  and the `V#` vision rows for the UI). `source` is `system2` (stored `DONE`, indexed as an `explanation` RAG doc),
+  `system2_template` (System 2 answered with its own checked template), `template` or `system1` (all three stored
+  `TEMPLATE`: not final, never indexed).
+- Otherwise (connection error, 5xx, timeout, breaker open, `context_source: "none"`, no answer) the existing
+  MCP -> System 2 -> template path runs with the time left, and the response carries
+  `orchestrator: {"error": "<why>"}`. A 4xx from the orchestrator (e.g. a 422 image) does not open its breaker.
+- A stored `TEMPLATE` row is retried when either `SYSTEM2_URL` or `ORCHESTRATOR_URL` is set.
+- `Explanation.source` ∈ `system2 | system2_template | template | system1` (`system1` = the orchestrator's short System 1 answer for a flag
+  with no escalation signal). A cached `TEMPLATE` row reads back as `template`.
+- Optional request body on `POST /flags/{id}/explain`: `{"image_b64": "<base64 or data: URL>", "image_kind":
+  "thermal|gauge|spectrogram|acoustic_imager|orbit_screenshot|visual"}` (at most 12,000,000 characters; 422 if
+  not base64). An image bypasses the cache (an operator photo is a new question) and is forwarded only to the
+  orchestrator (`pairing: "linked"`, route reason `operator_image`). Without `ORCHESTRATOR_URL` it is ignored and the
+  response carries `warning: "image ignored: ORCHESTRATOR_URL is not set"`.
+- `POST /api/v1/ask {"question" (2-2000 chars), "flag_id"?, "max_steps"? (1-4)}` proxies to the orchestrator's
+  `/v1/ask` (bounded read-only MCP tool loop) and returns its body unchanged. `citations` can be `[]` with
+  `cited: false`; `retrieved` then lists every id the tools returned (show it as "consulted, not cited"). `503 {"error": "orchestrator_unset"}`
+  when `ORCHESTRATOR_URL` is unset; `503 {"error": "orchestrator_unavailable"}` when it is down. Open like `/explain`.
+- `GET /health` adds `orchestrator` (`unset | up | down | degraded`, plus `breaker`).
+- `app.model_calls`: orchestrator calls are logged as `system = 'system2'` (the table's CHECK allows
+  system1/system2/embed) with `endpoint = 'orchestrator:/v1/assess'` (or `/v1/ask`) and `metadata.via =
+  'orchestrator'`, `route`, `source`, `system2_path`.
 
 ### Backend details (ADDED 2026-10-10 by the backend agent; additive)
 - **`flags.reasons`** is a list, verdicts first: `{"rule": "laya_verdict", "verdict", "confidence", "priority",
@@ -147,7 +189,8 @@ the next `/explain` retries System 2 (and replaces it on success); when unset, t
   `events.payload.triage.request_id` and `raw.spot_event_log.request_id` (**needs the additive column, RAG
   contract §6**; written only when it exists).
 - **System 1 load and logging (integrator, 2026-10-10, audit H2/M2).** Laya serves one request at a time. While an explicit batch call (forecast, `/system1/predict`) is in flight, ingest does not queue behind it: the event gets the rules-only verdict with `system1.status = laya_unavailable`, error `busy: ...`. A live forecast asks Laya for at most 5 actions per request; the rest get the empirical baseline. On the AMD GPU a batch takes well under a second, so this only matters on CPU. `app.model_calls` holds **one row per successful System 1 call, written by the System 1 service** (the true model latency). The backend writes `system='system1'` rows only for failed calls (`ok=false`, `metadata.caller='backend'`).
-- **Authoritative System 2 HTTP contract (2026-10-10.backend.1):** `POST /v1/assess` requires
+- **Authoritative System 2 HTTP contract (2026-10-10.backend.1; current version `2026-10-10.backend.2` adds the
+  optional multimodal inputs in "System 2 multimodal inputs" below, everything here still holds):** `POST /v1/assess` requires
   `flag_id` (strict positive integer; booleans rejected), `flag` (object), and `context` (object).
   Optional fields are `request_id` (string/null), `event` (object/null), and `reasons` (list of strings/null entries).
   Additive input keys are ignored; DB rows need no legacy timestamp/kind/mission_health fields.
@@ -197,3 +240,60 @@ the next `/explain` retries System 2 (and replaces it on success); when unset, t
   [detail strings], "context": <packet from GET /flags/{id}/context>}`; it accepts `reasoning` or R3's
   `evidence[{claim, ids}]`. Optional `POST /v1/debrief {"mission_id", "facts"}` → `{"summary",
   "recommendations"}`; without it, debriefs are templated.
+
+### System 2 multimodal inputs (contract `2026-10-10.backend.2`, ADDED 2026-10-10; additive)
+Every field below is optional. A request without them is a `backend.1` request and gets byte-identical prompts,
+packet hashes and responses. The **response body is unchanged**: V# IDs simply appear in `evidence[].ids`.
+Research basis: `research/tech-spot-vision-cv-2026-10-10.md` §3 and §7 (code makes the numbers; the model explains).
+- **`context.vision`**: list (at most 16) of tool readings from the vision service (`docs/vision-contract.md`):
+  `{"id": "V1", "tool", "kind", "quantity", "value", "unit", "confidence", "trust": "HIGH|LOW", "logged_id",
+  "logged_value", "delta", "agrees", "pairing": "demo|linked"}`. `id` (`V` + 1–3 digits, first digit nonzero),
+  `tool` (nonblank) and `trust` are required. `value`, `logged_value`, `delta` are finite numbers or null;
+  `confidence` is a number in [0, 1] or null; `agrees` is a boolean or null; text fields are strings or null,
+  stripped of control characters and capped at 64 characters. Unknown keys are ignored. `value`, `delta` and
+  `agrees` are **computed by code upstream** (never by a model). A `trust: "LOW"` row carries no value: System 2
+  drops `value`, `delta` and `agrees` from LOW rows before the prompt, so they can never be cited. Each row becomes
+  an ordinary citable evidence row `V#` whose content is the canonical JSON of its retained fields, so the
+  existing claim-local checks apply: a number in a claim must appear in a V# or R#/reading row that claim cites.
+- **`context.vision` follow-up (ADDED 2026-10-10, still `backend.2`, additive; prompt `analyst-prompt-2026-10-10.3`):**
+  optional `flags`: a list of uppercase reader caveats (`^[A-Z][A-Z_]{0,31}$`, no digits), de-duplicated and capped
+  at 8; anything else is 422. `AMBIGUOUS_NEEDLE` or `DEFAULT_SWEEP` forces `trust: "LOW"`. `CLIPPED` keeps the trust
+  but adds `bound: "lower"` (the value is the top of the scale; the true value is at least that). Optional `bound`:
+  `lower | upper`.
+- **Demo rows:** `pairing: "demo"` rows come from an illustrative kit image chosen by action type, not from this
+  asset: System 2 drops their `agrees`, `delta`, `logged_id` and `logged_value`, and they never trigger the action
+  restriction below.
+- **`context.ocr`**: list of `{"text", "conf"}` lines read off the image (`conf` a number in [0, 1] or null).
+  Untrusted context text, **never evidence and never citable**: System 2 keeps the first 30 nonblank lines,
+  strips control and format characters, collapses whitespace, caps each line at 80 characters and all lines at
+  1,200 characters. A number seen only in OCR text fails the grounding check unless a cited V#/R# row states it.
+- **`context.system1`** (already consumed): Laya rows in the MCP shape `{"id", "when", "q", "answer", "meaning",
+  "p"}`. Laya-native keys are also accepted and mapped: `question` → `q`, `probability` or `confidence` → `p`,
+  and `probs[answer]` → `p` when `p` is absent. The prompt shows question, answer, meaning and probability.
+- **`image_b64`** (top level, string or null): one JPEG or PNG, base64, optionally with a
+  `data:image/jpeg;base64,` / `data:image/png;base64,` prefix (the prefix type must match the bytes). Decoded size
+  at most 2 MiB (2,097,152 bytes); the first bytes must be the JPEG (`FF D8 FF`) or PNG (`89 50 4E 47 0D 0A 1A 0A`)
+  signature. Anything else (bad base64, wrong signature, too large, non-string) is **422**. `null` or `""` means
+  no image. Marks drawn on the image (needle line, hotspot box, peak marker) are labelled with their V# ID.
+  **The image is context only and is never citable evidence.**
+- **Actions:** when any HIGH-trust **`linked`** V# row has `agrees: false` (demo rows never do), `MONITOR` and `NO_ACTION` are removed from that
+  request's allowed actions (the tool and the log disagree, so "all fine" is not an answer); if the validator's
+  `suggested_action` was removed it becomes `MANUAL_READING`, else `CHECK_SENSOR_PAYLOAD`, when supplied, else
+  unset. No new action codes. The prompt asks the model to prefer `MANUAL_READING` / `CHECK_SENSOR_PAYLOAD`, cite
+  both the V# and the logged reading ID, and call a LOW-trust image reading unreliable.
+- **Prompt and serving:** the multimodal system rules are appended only when `vision`, `ocr` or an image is
+  present. With an image, the final user message is an OpenAI content array, image first, then the packet text
+  with the question last (exact format: `amd/system2/PROMPT_FORMAT.md`), sent to `SYSTEM2_VISION_MODEL`
+  (default `SYSTEM2_MODEL`) with the same `json_schema` response format. If the server rejects image input
+  (e.g. llama-server without `--mmproj`), the same attempt is re-sent once text-only to `SYSTEM2_MODEL`; the
+  request still succeeds. Response header **`X-System2-Image: used | text_only | not_used`**, present only when
+  the request carried an image (`not_used` = stub mode, insufficient context or template fallback).
+  `VISION_RULES` (prompt `.3`) also says demo rows are illustrative and never compared, `bound=lower` values are
+  lower bounds ("at least"), and `RELATIVE_ONLY` values are relative levels. Requests with no vision fields still get
+  the byte-identical pre-multimodal prompt (golden test unchanged).
+- **Image deadline:** requests with `image_b64` use `SYSTEM2_IMAGE_DEADLINE_S` (default 25 s, must be in (0, 120])
+  instead of 15 s; the image call keeps 8 s back and, if it times out, the same attempt is re-sent text-only
+  (`X-System2-Image: text_only`, not cached). A gateway 400 "No connected db." (LiteLLM's answer to a wrong key) is an
+  auth error, never an image rejection: no text-only resend.
+- **Cache:** `packet_hash` also covers the kept OCR lines and the image's sha256 (only when present, so old hashes
+  are unchanged); image requests key on the vision model; text-only answers to image requests are not cached.

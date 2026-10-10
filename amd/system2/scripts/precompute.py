@@ -134,7 +134,7 @@ def main(argv=None):
     items = items[:args.limit] if args.limit else items
     from analyst.generation import LlamaGenerator
     try:
-        generator = LlamaGenerator(url, model=model)
+        generator = LlamaGenerator(url, model=model, api_key=os.environ.get('SYSTEM2_LLAMA_API_KEY') or None)
         assessor = LiveAssessor(generator, model, PipelineConfig(deadline_s=args.deadline_s, catalog=default_catalog()),
                                 cache=ExplanationCache(cache_dir))
     except (ValueError, OSError) as exc:

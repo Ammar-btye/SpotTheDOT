@@ -52,7 +52,7 @@ class Harness:
         s = self.svc
         s.repo = self.repo
         s.sink = self.sink
-        for obj in (s.system1, s.embed, s.system2, s.pipeline, s.replay, s.flags):
+        for obj in (s.system1, s.embed, s.system2, s.orchestrator, s.pipeline, s.replay, s.flags):
             obj.sink = self.sink
         s.pipeline.repo = self.repo
         s.flags.repo = self.repo

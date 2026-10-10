@@ -38,6 +38,7 @@ class Health(BaseModel):
     embed: Optional[ServiceHealth] = None
     mcp: Optional[ServiceHealth] = None
     system2: Optional[ServiceHealth] = None
+    orchestrator: Optional[ServiceHealth] = None
     replay: Dict[str, Any] = {}
     kit: Dict[str, Any] = {}
 

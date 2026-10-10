@@ -60,6 +60,7 @@ class Generation:
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
     tokens_per_sec: Optional[float] = None
+    image_used: Optional[bool] = None   # None: no image sent; False: image rejected, answered text-only
 
 
 @dataclass(frozen=True)
@@ -83,13 +84,17 @@ class Attempt:
     completion_tokens: Optional[int] = None
     tokens_per_sec: Optional[float] = None
     response_bytes: Optional[int] = None
+    image_used: Optional[bool] = None
 
     def to_dict(self) -> dict:
-        return {'index': self.index, 'status': self.status, 'errors': [e.to_dict() for e in self.errors],
-                'detail': self.detail, 'latency_ms': self.latency_ms, 'model': self.model,
-                'finish_reason': self.finish_reason, 'prompt_tokens': self.prompt_tokens,
-                'completion_tokens': self.completion_tokens, 'tokens_per_sec': self.tokens_per_sec,
-                'response_bytes': self.response_bytes}
+        d = {'index': self.index, 'status': self.status, 'errors': [e.to_dict() for e in self.errors],
+             'detail': self.detail, 'latency_ms': self.latency_ms, 'model': self.model,
+             'finish_reason': self.finish_reason, 'prompt_tokens': self.prompt_tokens,
+             'completion_tokens': self.completion_tokens, 'tokens_per_sec': self.tokens_per_sec,
+             'response_bytes': self.response_bytes}
+        if self.image_used is not None:   # only image requests record it, so text-only artifacts are unchanged
+            d['image_used'] = self.image_used
+        return d
 
 
 @dataclass(frozen=True)
@@ -109,6 +114,13 @@ class AssessmentRun:
     @property
     def assessment(self) -> dict:
         return json.loads(self._assessment)
+
+    @property
+    def image_used(self) -> Optional[bool]:
+        """Whether the accepted model answer saw the image: None for no image sent or a template/insufficient run."""
+        if self.path not in ('llm', 'retry') or not self.attempts:
+            return None
+        return self.attempts[-1].image_used
 
     def to_dict(self) -> dict:
         return {'assessment': self.assessment, 'model': self.model, 'path': self.path,
@@ -193,7 +205,8 @@ def _attempt(index, generator, prepared, errors, config, start, catalog) -> Tupl
     meta = dict(latency_ms=_ms(t1 - t0), model=_clip(g.model) if isinstance(g.model, str) and g.model.strip() else None,
                 finish_reason=_clip(g.finish_reason, 32) if isinstance(g.finish_reason, str) else None,
                 prompt_tokens=_count(g.prompt_tokens), completion_tokens=_count(g.completion_tokens),
-                tokens_per_sec=_rate(g.tokens_per_sec), response_bytes=size)
+                tokens_per_sec=_rate(g.tokens_per_sec), response_bytes=size,
+                image_used=g.image_used if type(g.image_used) is bool else None)
     if t1 - start > config.deadline_s:
         return Attempt(index, 'timeout', detail='deadline exceeded', **meta), None
     if size > config.max_response_bytes:

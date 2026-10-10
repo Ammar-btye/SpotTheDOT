@@ -7,7 +7,7 @@ row in the packet.
 
 Plan and evidence: `research/tech-system2-context-distill-2026-10-10.md` (recommendations R1–R7).
 The authoritative HTTP contract is [docs/backend-services-contract.md](../../docs/backend-services-contract.md)
-(`2026-10-10.backend.1`). Backend owns retrieval through MCP/SQL fallback and supplies `context`.
+(`2026-10-10.backend.2`). Backend owns retrieval through MCP/SQL fallback and supplies `context`.
 The HTTP path does not build its own kit/Neon packet. Phase 1 `analyst/contract.py`, `schema/`, and
 `fixtures/*.json` remain legacy offline artifacts, including inputs for the serving feasibility smoke.
 
@@ -38,6 +38,25 @@ Native/compose System 2 port is **8083**; llama-server remains 8080. `SYSTEM2_AP
 `AMD_API_KEY` is the compatibility alias. See [RUNNING.md](../../docs/RUNNING.md) for current startup and compose.
 Authorization via `X-API-Key` precedes body parsing; `/health` is open. Native binds loopback; remote access uses
 `ssh -L 8083:127.0.0.1:8083 <user>@<amd-box>`. Compose callers use `http://system2:8083`.
+
+## Multimodal inputs (contract `2026-10-10.backend.2`)
+
+Optional and additive; a request without them gets byte-identical prompts and packet hashes
+(`tests/golden/prompts_pre_multimodal.json`). `context.vision[]` rows (computed upstream by `amd/vision`) become
+citable `V#` evidence; LOW-trust rows lose `value`/`delta`/`agrees`; a HIGH-trust `linked` row with `agrees=false`
+removes `MONITOR`/`NO_ACTION` from the allowed actions. `pairing: "demo"` rows (a kit sample image, not this asset)
+lose `agrees`/`delta`/`logged_*` and never restrict actions. An optional `flags` list (uppercase reader caveats, at
+most 8) is kept; `AMBIGUOUS_NEEDLE`/`DEFAULT_SWEEP` force LOW trust and `CLIPPED` adds `bound: "lower"`.
+`context.ocr[]` lines are capped, untrusted, never-citable text.
+Top-level `image_b64` (JPEG/PNG, at most 2 MiB decoded, signature-checked, else 422) is context only: it is sent
+image-first to `SYSTEM2_VISION_MODEL` (default `SYSTEM2_MODEL`); if the server rejects images (no `--mmproj`),
+the same attempt is re-sent text-only and the response header `X-System2-Image` says `text_only`. Image requests
+get `SYSTEM2_IMAGE_DEADLINE_S` (default 25 s, text requests keep 15 s); the image call keeps 8 s back and, if it
+times out, the same attempt is re-sent text-only (`X-System2-Image: text_only`). A gateway auth error (LiteLLM's
+400 "No connected db." for a wrong key) is never mistaken for an image rejection.
+`SYSTEM2_LLAMA_API_KEY` is sent as a Bearer token (for the LiteLLM gateway). Exact prompt format for the
+fine-tune: [PROMPT_FORMAT.md](PROMPT_FORMAT.md); render it with `python scripts/prompt_example.py`. Stack wiring:
+[INTEGRATION-multimodal.md](INTEGRATION-multimodal.md). Tests: `tests/test_multimodal.py`.
 
 ## Phase 2 offline generation and evaluation
 

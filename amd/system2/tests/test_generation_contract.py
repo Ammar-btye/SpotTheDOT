@@ -99,7 +99,7 @@ def test_stub_defaults_and_version_marker_retained():
         response.pop(key, None)
     r = BackendAssessResponse.model_validate(response)
     assert (r.model, r.latency_ms, r.tokens_per_sec) == ('stub', 0, None)
-    assert BACKEND_CONTRACT_VERSION == '2026-10-10.backend.1'
+    assert BACKEND_CONTRACT_VERSION == '2026-10-10.backend.2'   # backend.2: additive multimodal inputs
 
 
 # ── safety rules stay strict ─────────────────────────────────────────────────────────────────

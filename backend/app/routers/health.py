@@ -14,9 +14,9 @@ router = APIRouter(tags=["health"])
 async def health(deep: bool = Query(True, description="Probe every dependency (each with a ~2 s timeout). "
                                                      "`deep=false` answers instantly (Docker HEALTHCHECK)."),
                  svc: Services = Depends(get_services)) -> Health:
-    """Liveness plus the status of every dependency: database, System 1 (Laya), embedding service, MCP server
-    and System 2. `ok` is true whenever the API itself is serving; a down dependency only switches the
-    affected endpoints to their fallbacks."""
+    """Liveness plus the status of every dependency: database, System 1 (Laya), embedding service, MCP server,
+    System 2 and the orchestrator. `ok` is true whenever the API itself is serving; a down dependency only switches
+    the affected endpoints to their fallbacks."""
     from ..main import VERSION
 
     s = svc.settings
@@ -42,8 +42,9 @@ async def health(deep: bool = Query(True, description="Probe every dependency (e
     results = await asyncio.gather(
         db_status(svc.db), db_status(svc.logs_db), svc_status(svc.system1, s.system1_url),
         svc_status(svc.embed, s.embed_url), svc_status(svc.mcp, s.mcp_url),
-        svc_status(svc.system2, s.system2_url), return_exceptions=True)
-    names = ["database", "logs_database", "system1", "embed", "mcp", "system2"]
+        svc_status(svc.system2, s.system2_url), svc_status(svc.orchestrator, s.orchestrator_url),
+        return_exceptions=True)
+    names = ["database", "logs_database", "system1", "embed", "mcp", "system2", "orchestrator"]
     for name, res in zip(names, results):
         if isinstance(res, Exception):
             res = {"status": "down", "error": str(res)}
