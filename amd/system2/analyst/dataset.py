@@ -2,6 +2,12 @@
 
 Kit rows come from paths.kit_dir() (SPOT_KIT_DIR or the checked-in kit), the same source the grounding entity catalog
 uses; a different kit fails the row-hash checks. Static passages and the seed export need the repository checkout.
+
+Two splits, never mixed. 'train' (the default everywhere, so prompts.load_examples can never read anything else)
+accepts only training missions and rejects any holdout row. 'heldout' accepts only System 1 fold-2 missions, and every
+dynamic row must come from the case's own mission at or before as_of (no evidence crosses missions); static asset and
+location rows stay allowed. heldout_dataset() builds the Phase 4 headline set deterministically from the kit and the
+checked-in policy; its manifest carries split 'heldout' and HELDOUT_POLICY_VERSION, the train manifest is unchanged.
 """
 from __future__ import annotations
 
@@ -16,6 +22,8 @@ from .backend_contract import BackendAssessRequest
 from .packet import normalize_packet
 from .paths import kit_dir, repo_root
 POLICY_VERSION = 'saved-kit-fold2-asof-v1'
+HELDOUT_POLICY_VERSION = 'saved-kit-fold2-heldout-asof-v1'
+SPLITS = ('train', 'heldout')
 HOLDOUT_MISSIONS = frozenset({'M006', 'M009', 'M012', 'M013', 'M017', 'M018', 'M019', 'M020', 'M023'})
 CATEGORIES = frozenset({'equipment', 'robot_health', 'navigation', 'data_quality', 'mission', 'insufficient_context'})
 KEYS = {'actions': 'action_id', 'readings': 'reading_id', 'anomalies': 'anomaly_id',
@@ -111,7 +119,13 @@ def _reject_leakage(value):
             _reject_leakage(child)
 
 
-def _checked_rows(provenance, as_of, tables):
+def _split(split) -> str:
+    if split not in SPLITS:
+        raise ValueError('unknown split %r' % (split,))
+    return split
+
+
+def _checked_rows(provenance, as_of, tables, split='train', mission_id=None):
     if not isinstance(provenance, dict) or set(provenance) != {'kind', 'source_rows'}:
         raise ValueError('every evidence item requires known provenance')
     refs = provenance['source_rows']
@@ -125,8 +139,10 @@ def _checked_rows(provenance, as_of, tables):
         if not isinstance(table, str) or table not in tables or not isinstance(row_id, str) or row_id not in tables[table]:
             raise ValueError('source row not in checked-in kit')
         row = tables[table][row_id]
-        if row.get('mission_id') in HOLDOUT_MISSIONS:
+        if _split(split) == 'train' and row.get('mission_id') in HOLDOUT_MISSIONS:
             raise ValueError('holdout source row prohibited')
+        if split == 'heldout' and availability(table, row) is not None and row.get('mission_id') != mission_id:
+            raise ValueError('held-out dynamic evidence must come from the case mission only')
         if ref != source_ref(table, row):
             raise ValueError('source hash or availability does not match source row')
         static = availability(table, row) is None
@@ -138,7 +154,7 @@ def _checked_rows(provenance, as_of, tables):
     return checked
 
 
-def _check_item(item, as_of, tables):
+def _check_item(item, as_of, tables, split='train', mission_id=None):
     if not isinstance(item, dict):
         raise ValueError('evidence must be an object')
     provenance = item.get('provenance')
@@ -159,7 +175,7 @@ def _check_item(item, as_of, tables):
     else:
         if set(item) != {'id', 'fact', 'provenance'}:
             raise ValueError('unsupported evidence fields or uncertified aggregate')
-        rows = _checked_rows(provenance, as_of, tables)
+        rows = _checked_rows(provenance, as_of, tables, split, mission_id)
         expected = ' | '.join(row_fact(table, row) for table, row in sorted(rows, key=lambda pair: (pair[0], pair[1][KEYS[pair[0]]])))
         if item['fact'] != expected:
             raise ValueError('evidence content is not the certified source projection')
@@ -221,7 +237,8 @@ class SavedCase:
                 'reference': self.reference}
 
 
-def validate_dataset(value) -> tuple[SavedCase, ...]:
+def validate_dataset(value, split: str = 'train') -> tuple[SavedCase, ...]:
+    _split(split)
     if not isinstance(value, dict) or set(value) - {'cases', 'manifest'}:
         raise ValueError('dataset must contain cases and optional manifest')
     raw = value.get('cases')
@@ -236,10 +253,11 @@ def validate_dataset(value) -> tuple[SavedCase, ...]:
         if not isinstance(record['case_id'], str) or not record['case_id'].strip() or record['case_id'] in identities:
             raise ValueError('duplicate or invalid case_id')
         identities.add(record['case_id'])
-        if record['category'] not in CATEGORIES or record['split'] != 'train':
-            raise ValueError('only controlled training categories accepted')
-        if record['mission_id'] not in tables['missions'] or record['mission_id'] in HOLDOUT_MISSIONS:
-            raise ValueError('case must belong to a real training mission')
+        if record['category'] not in CATEGORIES or record['split'] != split:
+            raise ValueError('only controlled %s categories accepted' % split)
+        if record['mission_id'] not in tables['missions'] or (record['mission_id'] in HOLDOUT_MISSIONS) != (
+                split == 'heldout'):
+            raise ValueError('case must belong to a real %s mission' % split)
         as_of = _time(record['as_of'])
         mission = tables['missions'][record['mission_id']]
         if not _time(mission['start_time']) <= as_of <= _time(mission['end_time']):
@@ -263,7 +281,7 @@ def validate_dataset(value) -> tuple[SavedCase, ...]:
             unique = {}
             for item in items:
                 item = _canonical_item(item)
-                _check_item(item, as_of, tables)
+                _check_item(item, as_of, tables, split, record['mission_id'])
                 item_bytes = canonical_bytes(item)
                 if item['id'] in seen and seen[item['id']] != item_bytes:
                     raise ValueError('conflicting duplicate citation id')
@@ -296,37 +314,63 @@ def validate_dataset(value) -> tuple[SavedCase, ...]:
 
 
 def dataset_manifest(cases) -> dict:
+    """Train manifests are exactly the Phase 2 shape; held-out ones add split 'heldout' (also inside the hash)."""
     rows = [c.to_dict() for c in sorted(cases, key=lambda c: c.case_id)]
-    payload = {'policy_version': POLICY_VERSION, 'holdout_fold': 2,
-               'holdout_missions': sorted(HOLDOUT_MISSIONS), 'cases': rows}
-    return {'policy_version': POLICY_VERSION, 'holdout_fold': 2,
-            'holdout_missions': sorted(HOLDOUT_MISSIONS), 'case_count': len(rows),
-            'content_hash': content_hash(payload)}
+    splits = {c.split for c in cases}
+    if len(splits) > 1:
+        raise ValueError('a dataset must not mix splits')
+    heldout = splits == {'heldout'}
+    head = {'policy_version': HELDOUT_POLICY_VERSION if heldout else POLICY_VERSION, 'holdout_fold': 2,
+            'holdout_missions': sorted(HOLDOUT_MISSIONS)}
+    if heldout:
+        head['split'] = 'heldout'
+    return {**head, 'case_count': len(rows), 'content_hash': content_hash({**head, 'cases': rows})}
 
 
-def load_dataset(path: str | Path) -> tuple[SavedCase, ...]:
+def load_dataset(path: str | Path, split: str = 'train') -> tuple[SavedCase, ...]:
     try:
         value = json.loads(Path(path).read_text(encoding='utf-8'))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError('cannot read saved dataset') from exc
-    return validate_dataset(value)
+    return validate_dataset(value, split)
 
 
-def seed_dataset() -> dict:
-    """Deterministic offline export, separate from backend's runtime retrieval."""
+def _system1():
+    """system1 kit/events/policy and the MCP domain, guarded to the checked-in policy (no environment override)."""
     import sys
     root = _repo()
     sys.path.insert(0, str(root / 'amd/system1'))
     sys.path.insert(0, str(root / 'amd/mcp'))
+    from triage import events, policy
     from triage.kit import load_kit
-    from triage.events import action_event
-    from triage.policy import label_action
     from spot_mcp import domain
 
-    kit = load_kit(kit_dir())
-    tables = source_tables()
     if domain._POLICY_PATH.resolve() != (root / 'amd/system1/triage/policy.py').resolve():
         raise ValueError('seed export requires the checked-in policy, not an environment override')
+    return load_kit(kit_dir()), events, policy, domain
+
+
+def _action_facts(tables, action_id):
+    """F1 = the action row, then its readings and anomalies in key order (individual rows, never aggregates)."""
+    facts = [evidence_item('F1', 'actions', tables['actions'][action_id])]
+    for table in ('readings', 'anomalies'):
+        matches = [r for r in tables[table].values() if r['action_id'] == action_id]
+        for source in sorted(matches, key=lambda r: r[KEYS[table]]):
+            facts.append(evidence_item('F%d' % (len(facts) + 1), table, source))
+    return facts
+
+
+def _suggested(kit, domain, action, category, priority):
+    action_facts = {**action, **(kit.anomalies.get(action['action_id']) or {}),
+                    'environment': kit.locations[action['location_id']]['environment']}
+    return domain.suggested_action(category, priority, action_facts)
+
+
+def seed_dataset() -> dict:
+    """Deterministic offline export, separate from backend's runtime retrieval."""
+    kit, events, policy, domain = _system1()
+    action_event, label_action = events.action_event, policy.label_action
+    tables = source_tables()
     vocabulary = domain.ALLOWED_ACTIONS
     selected = {}
     for action in kit.actions:
@@ -342,16 +386,9 @@ def seed_dataset() -> dict:
     records = []
     for index, category in enumerate(sorted(selected), 1):
         action, labelled = selected[category]
-        row = tables['actions'][action['action_id']]
-        facts = [evidence_item('F1', 'actions', row)]
-        for table in ('readings', 'anomalies'):
-            matches = [r for r in tables[table].values() if r['action_id'] == action['action_id']]
-            for source in sorted(matches, key=lambda r: r[KEYS[table]]):
-                facts.append(evidence_item('F%d' % (len(facts) + 1), table, source))
+        facts = _action_facts(tables, action['action_id'])
         as_of = max(r['available_at'] for f in facts for r in f['provenance']['source_rows'])
-        action_facts = {**action, **(kit.anomalies.get(action['action_id']) or {}),
-                        'environment': kit.locations[action['location_id']]['environment']}
-        suggested = domain.suggested_action(category, labelled['priority'], action_facts)
+        suggested = _suggested(kit, domain, action, category, labelled['priority'])
         records.append(_seed_record(index, category, action['mission_id'], as_of, facts,
                                     vocabulary[category], suggested))
     mission = next(r for key, r in sorted(tables['missions'].items()) if key not in HOLDOUT_MISSIONS)
@@ -363,10 +400,63 @@ def seed_dataset() -> dict:
     return {'cases': [c.to_dict() for c in cases], 'manifest': dataset_manifest(cases)}
 
 
+def heldout_dataset() -> dict:
+    """Controlled fold-2 held-out packets: the events System 2 can actually be asked to explain.
+
+    Population (checked-in policy): one case per fold-2 action whose label_action category is not 'none' (P1-P3;
+    Laya can raise a P3 to an escalation in parallel mode, so every flagged action is explainable), and one case per
+    fold-2 mission whose label_mission priority is not P4. Evidence is individual kit rows of the case's own mission
+    available at as_of: an action case cites its action row as F1, then its readings and anomalies; a mission case
+    cites the mission row, its anomaly rows by anomaly_id, then its FAILED action rows by action_id, as of end_time.
+    reference stays None: human labels are out of scope (04-CONTEXT), so no reference is ever invented.
+    """
+    kit, events, policy, domain = _system1()
+    tables = source_tables()
+    vocabulary = domain.ALLOWED_ACTIONS
+    specs = []    # (case_id, category, mission_id, as_of, facts, suggested)
+    for action in kit.actions:
+        if action['mission_id'] not in HOLDOUT_MISSIONS:
+            continue
+        event = events.action_event(action, kit.missions[action['mission_id']], kit.locations[action['location_id']],
+                                    kit.assets[action['asset_id']], kit.readings.get(action['action_id']),
+                                    kit.anomalies.get(action['action_id']), 'kit')
+        labelled = policy.label_action(event)
+        category = labelled['category']
+        if category == 'none':
+            continue
+        facts = _action_facts(tables, action['action_id'])
+        as_of = max(r['available_at'] for f in facts for r in f['provenance']['source_rows'])
+        specs.append(('heldout-' + action['action_id'], category, action['mission_id'], as_of, facts,
+                      _suggested(kit, domain, action, category, labelled['priority'])))
+    for mission_id in sorted(HOLDOUT_MISSIONS):
+        mission = kit.missions[mission_id]
+        actions = sorted(kit.actions_of(mission_id), key=lambda a: (a['timestamp'], a['sequence']))
+        last = events.mission_events(mission, actions, kit.locations, kit.assets, kit.readings, kit.anomalies,
+                                     'kit')[-1]
+        if policy.label_mission(last)['priority'] == 'P4':
+            continue
+        rows = [('missions', tables['missions'][mission_id])]
+        rows += [('anomalies', r) for _, r in sorted(tables['anomalies'].items()) if r['mission_id'] == mission_id]
+        rows += [('actions', r) for _, r in sorted(tables['actions'].items())
+                 if r['mission_id'] == mission_id and r['status'] == 'FAILED']
+        facts = [evidence_item('F%d' % i, table, row) for i, (table, row) in enumerate(rows, 1)]
+        specs.append(('heldout-mission-' + mission_id, 'mission', mission_id, rows[0][1]['end_time'], facts,
+                      'REVIEW_MISSION'))
+    records = [_record(case_id, 1000 + index, category, mission_id, as_of, facts, vocabulary[category], suggested,
+                       'heldout')
+               for index, (case_id, category, mission_id, as_of, facts, suggested) in enumerate(sorted(specs), 1)]
+    cases = validate_dataset({'cases': records}, split='heldout')
+    return {'cases': [c.to_dict() for c in cases], 'manifest': dataset_manifest(cases)}
+
+
 def _seed_record(flag_id, category, mission_id, as_of, facts, actions, suggested):
+    return _record('kit-' + category, flag_id, category, mission_id, as_of, facts, actions, suggested, 'train')
+
+
+def _record(case_id, flag_id, category, mission_id, as_of, facts, actions, suggested, split):
     lineage = [r for f in facts for r in f['provenance']['source_rows']]
-    return {'case_id': 'kit-' + category, 'category': category, 'mission_id': mission_id,
-            'as_of': as_of, 'split': 'train', 'source_lineage': lineage,
+    return {'case_id': case_id, 'category': category, 'mission_id': mission_id,
+            'as_of': as_of, 'split': split, 'source_lineage': lineage,
             'reference': None,  # Independent operator labels are not yet available.
             'request': {'flag_id': flag_id, 'flag': {'category': category}, 'context': {
                 'question': 'What needs operator attention for this %s event?' % category,

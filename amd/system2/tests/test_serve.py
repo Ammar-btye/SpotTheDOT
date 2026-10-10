@@ -34,7 +34,8 @@ def _free_port() -> int:
 
 
 def _env(key=None) -> dict:
-    env = {k: v for k, v in os.environ.items() if k not in {"AMD_API_KEY", "SYSTEM2_API_KEY", "SYSTEM2_HOST", "SYSTEM2_PORT"}}
+    env = {k: v for k, v in os.environ.items() if k not in {"AMD_API_KEY", "SYSTEM2_API_KEY", "SYSTEM2_HOST", "SYSTEM2_PORT",
+                                                    "SYSTEM2_LLAMA_URL", "SYSTEM2_MODEL", "SYSTEM2_CACHE_DIR"}}
     if key is not None:
         env["AMD_API_KEY"] = key
     return env

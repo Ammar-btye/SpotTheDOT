@@ -13,7 +13,9 @@
 # mcp        8090  local, hybrid, neon      MCP context server for System 2 (streamable HTTP /mcp)
 # backend    8000  local, hybrid, neon      FastAPI dashboard API (/api/v1, /docs). ADMIN_TOKEN (header
 #                                           X-Admin-Token) guards /ops, /replay, POST /events; CORS_ORIGINS only
-# system2    8083  local, hybrid, neon, system2  Authenticated packet-grounded stub (model=stub), no retrieval.
+# system2    8083  local, hybrid, neon, system2  Authenticated System 2 /v1/assess: packet-grounded stub (model=stub)
+#                                           by default; live checked pipeline when SYSTEM2_LLAMA_URL points at
+#                                           llama-server (e.g. http://host.docker.internal:18080 over an SSH tunnel).
 #                                           Kit mounted read-only at /app/kit (SPOT_KIT_DIR) for grounding.
 #
 # Profiles:
@@ -21,7 +23,7 @@
 #   hybrid  db + db-init + mcp + backend + system2 in Docker; SYSTEM1_URL / EMBED_URL in .env point at the AMD GPU box,
 #           where system1 and embed run natively (the AMD Jupyter VMs have no root and can't run Docker)
 #   neon    Neon replaces `db`: DATABASE_URL (owner, db-init), BACKEND_DATABASE_URL, MCP_DATABASE_URL in .env
-#   system2 packet-grounded stub only, for independent integration checks
+#   system2 System 2 only, for independent integration checks (stub; live when SYSTEM2_LLAMA_URL is set)
 #   models  embed + system1 on CPU, to pair with neon:  COMPOSE_PROFILES=neon,models
 #
 # Conventions (keep them when adding a service):
@@ -148,6 +150,12 @@ services:
       SYSTEM2_HOST: 0.0.0.0
       SYSTEM2_PORT: "8083"
       SPOT_KIT_DIR: /app/kit   # entity catalog + saved-packet row checks (offline grounding modules)
+      # Live mode: empty SYSTEM2_LLAMA_URL = stub. Set it (and SYSTEM2_MODEL) to llama-server, e.g.
+      # http://host.docker.internal:18080 over ssh -L 18080:127.0.0.1:8080 <amd-box>. The image has no writable
+      # cache default: SYSTEM2_CACHE_DIR needs a writable mount, else live mode runs without the explanation cache.
+      SYSTEM2_LLAMA_URL: ${SYSTEM2_LLAMA_URL:-}
+      SYSTEM2_MODEL: ${SYSTEM2_MODEL:-}
+      SYSTEM2_CACHE_DIR: ${SYSTEM2_CACHE_DIR:-}
     ports: ["${BIND_ADDR:-127.0.0.1}:8083:8083"]
     volumes: ["./amd/system1/data/kit:/app/kit:ro"]
     # Non-root runtime and healthcheck are inherited from the image.

@@ -19,8 +19,11 @@ the request before any run) is reported as agreement, not action quality. Action
 independent case reference {expected_action, source}, which lives outside the request and never reaches a prompt.
 Latency quantiles use the nearest-rank method on per-case latency in milliseconds, including retry and fallback.
 
-The approved dataset holds development kit packets from training missions only (synthetic kit data, few-shots from
-the same pool with the current case excluded), so scope.headline_eligible is always false. Measured timings vary
+The default dataset holds development kit packets from training missions only (synthetic kit data, few-shots from
+the same pool with the current case excluded), so its scope.headline_eligible is false. Only the full controlled
+held-out set (manifest split 'heldout', System 1 fold-2 missions) is headline-eligible; a --limit subset never is,
+and no caller flag can set it. On held-out runs every model runner's few-shot pool must be training-only, checked
+before any model call and again on the recorded example IDs afterwards. Measured timings vary
 between runs; identity (dataset, selection, config, prompt, entity catalog source and hash, code revision) and
 outcomes from a deterministic runner do not. No model or GPU is touched here; measurements are whatever endpoint
 the caller points the model runner at.
@@ -46,7 +49,7 @@ import urllib.parse
 from pydantic import ValidationError
 
 from .backend_contract import BackendAction, BackendAssessRequest, BackendAssessResponse
-from .dataset import SavedCase, content_hash, validate_dataset
+from .dataset import HOLDOUT_MISSIONS, SPLITS, SavedCase, content_hash, validate_dataset
 from .grounding import EntityCatalog, check_assessment, default_catalog
 from .packet import PreparedPacket, normalize_packet
 from .paths import repo_root
@@ -61,6 +64,10 @@ GROUNDING_LABEL = 'mechanical consistency with cited packet content (not entailm
 SCOPE_NOTE = ('Approved development kit packets from training missions only (synthetic kit data, few-shots drawn from '
               'the same pool with the current case excluded). Not held-out and not independent real-world '
               'observations; never a headline number.')
+HELDOUT_SCOPE_NOTE = ('Controlled packets from System 1 fold-2 held-out kit missions: dynamic evidence comes only from '
+                      "the flag's own mission at or before as_of, with no labels, targets or prior generated answers, "
+                      'and few-shots come from the training pool only. Headline numbers only for the full set; '
+                      'grounding is still mechanical consistency, not entailment.')
 PATHS = ('llm', 'retry', 'fallback', 'insufficient_context')
 CHECKS = ('schema_valid', 'citation_valid', 'numeric_consistent', 'name_consistent')
 # Checker error codes by metric; an unknown code fails the schema check (fail closed).
@@ -97,6 +104,7 @@ class EvalDataset:
     manifest: dict
     file_sha256: str
     path: str
+    split: str = 'train'
 
 
 @dataclass(frozen=True)
@@ -117,10 +125,13 @@ def load_eval_dataset(path) -> EvalDataset:
         raise ValueError('cannot read saved dataset') from exc
     if not isinstance(value, dict) or not isinstance(value.get('manifest'), dict):
         raise ValueError('evaluation requires an approved dataset with its manifest')
-    cases = validate_dataset(value)   # empty, leakage, future evidence, holdout and manifest mismatch all fail here
+    split = value['manifest'].get('split', 'train')    # absent = the Phase 2 training manifest
+    if split not in SPLITS:
+        raise ValueError('unknown dataset split')
+    cases = validate_dataset(value, split)   # empty, leakage, future evidence, split and manifest mismatch fail here
     for c in cases:
         reference_action(c.reference)
-    return EvalDataset(cases, value['manifest'], hashlib.sha256(raw).hexdigest(), str(path))
+    return EvalDataset(cases, value['manifest'], hashlib.sha256(raw).hexdigest(), str(path), split)
 
 
 def reference_action(reference) -> Optional[str]:
@@ -421,12 +432,34 @@ def _prompt_identity(records: List[dict]) -> Optional[dict]:
             'example_case_ids': {r['case_id']: r['prompt'].get('example_case_ids') for r in records if r['prompt']}}
 
 
+def check_fewshot_isolation(dataset: EvalDataset, runners: Sequence) -> None:
+    """Held-out runs only: every exposed few-shot example is a training-mission case outside this dataset."""
+    if dataset.split != 'heldout':
+        return
+    ids = {c.case_id for c in dataset.cases}
+    for runner in runners:
+        for e in getattr(getattr(runner, 'generator', None), 'examples', None) or ():
+            if e.split != 'train' or e.mission_id in HOLDOUT_MISSIONS or e.case_id in ids:
+                raise ValueError('few-shot pool must be training-only for held-out evaluation')
+
+
+def headline_eligible(dataset: EvalDataset, config: EvalConfig) -> bool:
+    """Only the full held-out set; derived from the dataset and selection, never from a caller flag."""
+    return dataset.split == 'heldout' and (config.limit is None or config.limit >= len(dataset.cases))
+
+
 def run_evaluation(dataset: EvalDataset, runners: Sequence, config: EvalConfig) -> dict:
     """Select, evaluate and assemble metrics.json content (records stay under 'records')."""
     selected = select_cases(dataset.cases, config.limit, config.seed)
+    check_fewshot_isolation(dataset, runners)     # before any model call
     started = utc_now()
     result = evaluate_cases(selected, runners, config)
     finished = utc_now()
+    if dataset.split == 'heldout':
+        ids = {c.case_id for c in dataset.cases}
+        used = {i for r in result['records'] for i in ((r['prompt'] or {}).get('example_case_ids') or ())}
+        if used & ids:
+            raise ValueError('held-out case used as a few-shot example')
     identity = {
         'harness_version': HARNESS_VERSION,
         'dataset': {'content_hash': dataset.manifest['content_hash'], 'file_sha256': dataset.file_sha256,
@@ -446,8 +479,9 @@ def run_evaluation(dataset: EvalDataset, runners: Sequence, config: EvalConfig) 
     model_url = config.model_url if any(r.kind == 'model' for r in runners) else None
     return {
         'identity': identity,
-        'scope': {'split': '+'.join(identity['dataset']['splits']), 'headline_eligible': False,
-                  'grounding_label': GROUNDING_LABEL, 'note': SCOPE_NOTE},
+        'scope': {'split': dataset.split, 'headline_eligible': headline_eligible(dataset, config),
+                  'grounding_label': GROUNDING_LABEL,
+                  'note': HELDOUT_SCOPE_NOTE if dataset.split == 'heldout' else SCOPE_NOTE},
         'measurement': {'label': config.label,
                         'source': 'http model endpoint + in-process template' if model_url else 'in-process template',
                         'endpoint_loopback': is_loopback(model_url), 'dataset_path': dataset.path,
@@ -470,7 +504,9 @@ def report(metrics: dict) -> str:
              meas['dataset_path'], ident['dataset']['content_hash'][:12], len(ident['dataset']['selected_case_ids']),
              ident['dataset']['case_count'], metrics['scope']['split'], meas['label'], meas['started_at'],
              meas['finished_at']),
-         '', '**Not headline numbers.** %s Grounding = %s.' % (metrics['scope']['note'], GROUNDING_LABEL), '',
+         '', '%s %s Grounding = %s.' % ('**Headline-eligible (held-out fold 2, full set).**'
+                                         if metrics['scope']['headline_eligible'] else '**Not headline numbers.**',
+                                         metrics['scope']['note'], GROUNDING_LABEL), '',
          '| metric | %s |' % ' | '.join(metrics['runners']), '|---|%s' % ('---|' * len(metrics['runners']))]
     rows = [('public response valid', lambda a: _fmt(a['public_response_valid'])),
             ('model accepted (llm+retry)', lambda a: _fmt(a['generation']['model_accepted'])),
@@ -490,19 +526,24 @@ def report(metrics: dict) -> str:
 
 
 def write_artifacts(out_dir: Path, metrics: dict) -> None:
-    """Serialize everything first, then atomically replace cases.jsonl, report.md and (last) metrics.json.
-
-    Any previous metrics.json is removed before the first replacement, so its presence always means all three files
-    come from the same completed run, even when a later write fails (disk full, permissions).
-    """
+    """Serialize everything first, then atomically replace cases.jsonl, report.md and (last) metrics.json."""
     records = metrics['records']
     summary = {k: v for k, v in metrics.items() if k != 'records'}
-    payloads = [
+    publish_files(out_dir, [
         ('cases.jsonl', ''.join(json.dumps(r, ensure_ascii=False, sort_keys=True, allow_nan=False) + '\n'
                                 for r in records).encode('utf-8')),
         ('report.md', report(summary).encode('utf-8')),
         ('metrics.json', (json.dumps(summary, ensure_ascii=False, indent=2, allow_nan=False) + '\n').encode('utf-8')),
-    ]
+    ])
+
+
+def publish_files(out_dir: Path, payloads: Sequence[Tuple[str, bytes]]) -> None:
+    """Atomically replace each (name, bytes) in out_dir; metrics.json is always written last.
+
+    Any previous metrics.json is removed before the first replacement, so its presence always means every file
+    comes from the same completed run, even when a later write fails (disk full, permissions).
+    """
+    payloads = sorted(payloads, key=lambda item: item[0] == 'metrics.json')   # stable: others keep their order
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / 'metrics.json').unlink(missing_ok=True)
     for name, data in payloads:
