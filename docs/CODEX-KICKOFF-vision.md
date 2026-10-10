@@ -1,5 +1,7 @@
 # Codex kickoff: vision service, phase 1 (code readers + synthetic renders)
 
+> **Superseded (2026-10-10):** `main` has its own vision service (`amd/vision/vision/`, contract `2026-10-10.vision.2`) wired to System 2 `backend.2`. The Codex branch `vision-service` built from this kickoff is **not merged and conflicts with it**. Don't merge it; salvage only its synthetic renders and manifest if needed. Kept for history only.
+
 **How to start Codex.** From the repo root, after `git fetch origin && git checkout -b vision-service origin/claude/cool-darwin-edc92u`:
 
 ```

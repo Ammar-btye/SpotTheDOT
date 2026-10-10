@@ -1,5 +1,7 @@
 # Codex kickoff: vision fine-tune dataset + vision faithfulness eval set
 
+> **Paused (2026-10-10):** the dataset waits until fine-tuning is back on the table (System 2 is Qwen3.8-27B with no fine-tune). Before reuse, rebase it on `main`'s vision service and System 2 `backend.2` (trust `HIGH`/`LOW`, pairing `linked`/`demo`), not on the `vision-service` branch.
+
 **Prerequisite:** System 2 phase A, i.e. System 2 consumes `context.vision[]` (see
 `docs/NOTE-aatif-system2-vision.md`), pushed to a branch (suggested `aatif/system2-vision`). Without it, this task
 would have to guess the prompt format, so the training data would drift from serving.

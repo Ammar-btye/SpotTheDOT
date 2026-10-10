@@ -1,5 +1,7 @@
 # Note for Aatif: System 2 accepting vision evidence (V# rows, optional image)
 
+> **Superseded (2026-10-10):** System 2 phase A and B already landed on `main` as contract `2026-10-10.backend.2` (`amd/system2/INTEGRATION-multimodal.md`, `PROMPT_FORMAT.md`). It differs from this note: trust is `HIGH`/`LOW`, and pairing is `demo`/`linked`. Kept for history only.
+
 **From:** the team (drafted with Claude), Sat 2026-10-10. **You own this;** nothing here has been changed in
 `amd/system2/`. It's a proposal grounded in the current code; adjust as you see fit.
 
