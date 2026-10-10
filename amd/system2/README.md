@@ -18,7 +18,8 @@ The HTTP path does not build its own kit/Neon packet. Phase 1 `analyst/contract.
 `recommended_action`, `confidence` (`low | medium | high`), `insufficient_context`, `flag_id`, `model`,
 `latency_ms`, `tokens_per_sec`, and `path`. Actions use uppercase MCP vocabulary and packet membership;
 `MANUAL_REVIEW` is the documented safe extension. Citations resolve to actual supplied content.
-This phase serves `model=stub`; the full prompt/model pipeline remains Phase 2 work.
+The live service still serves `model=stub`. The Phase 2 prompt/model pipeline runs offline only (next section);
+Phase 3 wires it into serving.
 
 The published response schema enforces empty evidence, low confidence, `MANUAL_REVIEW`, and
 the insufficient path when context is insufficient; complete assessments require evidence and the stub path.
@@ -33,6 +34,90 @@ Native/compose System 2 port is **8083**; llama-server remains 8080. `SYSTEM2_AP
 `AMD_API_KEY` is the compatibility alias. See [RUNNING.md](../../docs/RUNNING.md) for current startup and compose.
 Authorization via `X-API-Key` precedes body parsing; `/health` is open. Native binds loopback; remote access uses
 `ssh -L 8083:127.0.0.1:8083 <user>@<amd-box>`. Compose callers use `http://system2:8083`.
+
+## Phase 2 offline generation and evaluation
+
+Everything here is offline: no new service, port, package or env var. Code lives in `analyst/` and is driven by
+`scripts/`; each script puts `amd/system2` on `sys.path` and imports `analyst.*` (for example
+`from analyst.evaluation import EvalConfig, ModelRunner, TemplateRunner, run_evaluation`). Commands run from
+`amd/system2`:
+
+```bash
+uv run --no-project --with-requirements requirements.txt python scripts/save_packets.py --seed --output data/dev_packets.json
+uv run --no-project --with-requirements requirements.txt python scripts/save_packets.py --input captures.json --output data/approved_packets.json
+uv run --no-project --with-requirements requirements.txt python scripts/evaluate.py --runner template --out-dir results/eval/template
+uv run --no-project --with-requirements requirements.txt python scripts/evaluate.py --runner both --model-url http://127.0.0.1:8080 --model qwen3.5-9b-q4km --label amd-gfx1151-rocm-qwen35-9b-q4km --out-dir results/eval/qwen35-9b
+```
+
+**Saved packets.** `--seed` rebuilds `data/dev_packets.json` byte for byte from the kit CSVs. `--input` approves
+offline MCP captures through the same validator and writes atomically. Approval rules: the split is `train`, and
+neither the case mission nor any source row belongs to a fold-2 holdout mission (M006, M009, M012, M013, M017,
+M018, M019, M020, M023, matching System 1's default fold). Every dynamic evidence item is the exact projection of
+a checked-in kit row, with its row hash and an availability time no later than the case `as_of`. Static passages
+are exact excerpts of pinned files. Requests may not contain labels, answers, prior outputs or unverified
+aggregates. The manifest's `content_hash` binds the whole set. An optional independent `reference`
+`{expected_action, source}` sits outside the request and never reaches a prompt. A source of `validator`, `policy`
+or `system1` is rejected.
+
+**Development numbers only.** The six cases are synthetic-kit packets from training missions. The few-shots come
+from the same pool: the first three in `EXAMPLE_ORDER` that share no evidence with the current packet, so a case
+is never its own example. Fewer than three such examples counts as a failed attempt and falls back to the
+template. Every result is a training-pool development number, and `scope.headline_eligible` is always `false`.
+Phase 4 owns held-out headline numbers, confidence intervals, human labels and any entailment judge. Phase 3
+owns live serving and the model bakeoff.
+
+**Token budget.** `max_tokens` defaults to 350. The SRV-00 smoke reply used 439 output tokens, but that was the
+uncapped Phase 1 prompt. The Phase 2 prompt uses compact few-shots and schema caps (at most 3 claims of 160
+characters, and a 240-character answer) to fit within 350. Whether Qwen3.5-9B actually fits is **unmeasured**. A
+reply that hits the limit (`finish_reason=length`) counts as truncated: it is retried, then falls back to the
+template, and is never accepted.
+
+**Fake HTTP versus a measured run.** `tests/test_evaluation.py` runs the same CLI against a fake loopback
+llama-server, so its numbers are regression checks of the harness, not measurements. A measurement is a run
+against llama-server on the AMD box (README "Serving smoke test"; from a laptop, first run
+`ssh -L 8080:127.0.0.1:8080 <user>@<amd-box>`) with a `--label` that names the hardware, backend and model. No
+measured Phase 2 run has been recorded yet.
+
+**Artifacts.** The output directory (`--out-dir`, default `results/eval/<runner>`) holds three files:
+- `cases.jsonl`: one record per runner and case.
+- `report.md`: a summary table.
+- `metrics.json`: written last, so it exists only for a completed run.
+
+`metrics.json` has these sections:
+- `identity`: dataset content and file hashes, selected case IDs, packet-set hash, runners, config (seed, limit,
+  deadline, timeout, max_tokens, credential-free model URL, model ID), prompt version and hashes, code revision
+  and dirty flag, and `identity_hash`. Identical inputs give an identical identity. Measured timings vary.
+- `scope`, `measurement`: the label, whether the endpoint is loopback, and start and finish times.
+- `runners`: the per-runner aggregates described below.
+- `comparison`: the case IDs and packet hashes common to all runners.
+
+Exit codes: 0 means the run completed, including runs where the model failed (failures are counted and fall back
+to the checked template). 1 means the dataset was rejected: unreadable, empty, missing its manifest, changed,
+leaking, holdout, future evidence or a bad reference. Rejection happens before any model call or output write.
+2 means a usage error. `--limit N --seed S` takes a seeded smoke sample.
+
+**Paths.** `llm` means the first attempt was accepted, and `retry` means the second was. `fallback` means both
+attempts failed, or the deadline ran out, and the checked template was used. It is labelled `model=template` and
+never counts as model success. `insufficient_context` means either the packet itself lacks evidence (guarded,
+with no generator call) or no template claim survived the checker. The template runner is the baseline. It uses
+the same normalization and checker as the pipeline's fallback, so its paths are `fallback` or
+`insufficient_context` and it makes no attempts.
+
+**Metric semantics.**
+- Every rate is `{value, count, denominator}`. An empty denominator gives `value: null` with `count: 0`, never
+  NaN.
+- Failed, timed-out and fallback cases stay in their denominators.
+- `first_attempt` covers the raw first model reply, over packets with enough evidence. `final` covers the output
+  after retry or fallback, over the same packets. Guarded insufficient packets are reported separately.
+- Schema, citation, numeric and name checks are cumulative and fail closed. A check passes only for a parsed,
+  schema-valid output that has no errors of that class. These are mechanical consistency checks against the
+  cited packet content, not entailment or correctness.
+- `action.agreement_with_validator` compares the output with the validator's `suggested_action`. It is not action
+  quality. `action.action_quality` exists only for cases with an independent reference; otherwise it is null with
+  count 0.
+- Latency is per case and includes retry and fallback. It is reported in milliseconds with nearest-rank
+  quantiles (rank = ceil(q·n)).
+- Token counts are summed over attempts.
 
 ## Historical Phase 1 build order (offline)
 1. **Context packet builder** (R1–R2): `flag → packet` JSON under ~1,500 tokens, key facts first, every row with a short
