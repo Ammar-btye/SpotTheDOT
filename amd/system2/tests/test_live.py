@@ -278,3 +278,236 @@ def test_serve_live_without_model_exits_2():
     assert r.returncode == 2, (r.returncode, r.stderr)
     assert 'SYSTEM2_MODEL' in r.stderr
     assert KEY not in r.stdout + r.stderr
+
+
+# ── explanation cache (SRV-02) ───────────────────────────────────────────────────────────────
+
+from analyst.evaluation import packet_hash  # noqa: E402
+from analyst.live import ExplanationCache, cache_dir_from_env, cache_key, prompt_version  # noqa: E402
+from analyst.prompts import PROMPT_VERSION, load_examples  # noqa: E402
+from scripts.precompute import load_requests, main as precompute_main, run_precompute  # noqa: E402
+
+FIXTURE = ROOT / 'fixtures' / 'backend' / 'equipment.json'
+
+
+def echo_gen(**kw):
+    """Valid model reply for whatever packet arrives (the few-shot reply builder, checked on every dev case)."""
+    return lambda packet: gen(example_output(packet), **kw)
+
+
+def cached_client(tmp_path, fake, model='fake-model'):
+    assessor = LiveAssessor(fake, model, PipelineConfig(deadline_s=15.0), cache=ExplanationCache(tmp_path / 'c'))
+    return assessor, TestClient(create_app(api_key=KEY, assessor=assessor))
+
+
+def entries(tmp_path):
+    d = tmp_path / 'c'
+    return sorted(d.glob('*.json')) if d.exists() else []
+
+
+def test_cache_key_deterministic_and_sensitive():
+    base = (2, 'a' * 64, 'qwen', 'p1')
+    assert cache_key(*base) == cache_key(*base)
+    assert len(cache_key(*base)) == 64 and int(cache_key(*base), 16) >= 0
+    for i, other in enumerate((3, 'b' * 64, 'qwen-27b', 'p2')):
+        changed = list(base)
+        changed[i] = other
+        assert cache_key(*changed) != cache_key(*base)
+
+
+def test_prompt_version_tracks_few_shot_pool():
+    assert prompt_version(FakeGen([])) == PROMPT_VERSION
+    ex = load_examples()
+    a, b = type('G', (), {'examples': ex})(), type('G', (), {'examples': ex[1:]})()
+    assert prompt_version(a).startswith(PROMPT_VERSION + ':') and len(prompt_version(a)) == len(PROMPT_VERSION) + 17
+    assert prompt_version(a) == prompt_version(type('G', (), {'examples': ex})())
+    assert prompt_version(a) != prompt_version(b)
+
+
+def test_miss_then_hit_is_byte_identical(tmp_path):
+    fake = FakeGen([echo_gen(model='qwen-served', tokens_per_sec=30.0)])
+    _, c = cached_client(tmp_path, fake)
+    first = post(c, equipment_json())
+    assert first.status_code == 200 and first.headers['X-System2-Cache'] == 'miss'
+    assert len(fake.calls) == 1 and len(entries(tmp_path)) == 1
+    second = post(c, equipment_json())
+    assert second.headers['X-System2-Cache'] == 'hit'
+    assert second.content == first.content
+    assert len(fake.calls) == 1
+
+
+def test_changed_fact_model_or_prompt_regenerates(tmp_path):
+    fake = FakeGen([echo_gen()])
+    assessor, c = cached_client(tmp_path, fake)
+    assert post(c, equipment_json()).headers['X-System2-Cache'] == 'miss'
+    req = copy.deepcopy(equipment_json())
+    req['context']['facts'][0]['fact'] += ' Rechecked on the next route.'
+    assert post(c, req).headers['X-System2-Cache'] == 'miss'
+    assert len(fake.calls) == 2
+    assert post(c, req).headers['X-System2-Cache'] == 'hit' and len(fake.calls) == 2
+    _, c2 = cached_client(tmp_path, fake, model='other-model')
+    assert post(c2, equipment_json()).headers['X-System2-Cache'] == 'miss' and len(fake.calls) == 3
+    assessor.prompt_ver = PROMPT_VERSION + ':changed'
+    assert post(c, equipment_json()).headers['X-System2-Cache'] == 'miss' and len(fake.calls) == 4
+    assert len(entries(tmp_path)) == 4
+
+
+def test_fallback_and_insufficient_never_stored(tmp_path):
+    fake = FakeGen([bad(), bad()])
+    _, c = cached_client(tmp_path, fake)
+    r = post(c, equipment_json())
+    assert r.json()['path'] == 'fallback' and r.headers['X-System2-Cache'] == 'miss'
+    req = json.loads(INSUFFICIENT.read_text(encoding='utf-8'))['request']
+    r = post(c, req)
+    assert r.json()['path'] == 'insufficient_context' and r.headers['X-System2-Cache'] == 'miss'
+    assert entries(tmp_path) == []
+
+
+def _stored(tmp_path):
+    (p,) = entries(tmp_path)
+    return p, json.loads(p.read_text(encoding='utf-8'))
+
+
+@pytest.mark.parametrize('corrupt', ['not_json', 'key_mismatch', 'ungrounded_claim', 'invalid_response',
+                                     'flag_mismatch'])
+def test_bad_entry_is_miss_and_overwritten(tmp_path, corrupt):
+    fake = FakeGen([echo_gen()])
+    _, c = cached_client(tmp_path, fake)
+    good_body = post(c, equipment_json()).json()
+    p, entry = _stored(tmp_path)
+    if corrupt == 'not_json':
+        p.write_text('{"key": ', encoding='utf-8')
+    else:
+        if corrupt == 'key_mismatch':
+            entry['key']['model'] = 'someone-else'
+        elif corrupt == 'ungrounded_claim':
+            entry['response']['evidence'][0]['claim'] = 'Battery was 99% and the asset exploded at 13:37.'
+        elif corrupt == 'invalid_response':
+            entry['response']['path'] = 'teleport'
+        else:
+            entry['response']['flag_id'] = 777
+        p.write_text(json.dumps(entry), encoding='utf-8')
+    r = post(c, equipment_json())
+    assert r.status_code == 200 and r.headers['X-System2-Cache'] == 'miss'
+    assert r.json()['evidence'] == good_body['evidence']
+    assert len(fake.calls) == 2
+    _, fresh = _stored(tmp_path)
+    assert fresh['response']['evidence'] == good_body['evidence']
+    assert post(c, equipment_json()).headers['X-System2-Cache'] == 'hit'
+
+
+def test_unwritable_cache_still_answers(tmp_path):
+    blocker = tmp_path / 'file'
+    blocker.write_text('x', encoding='utf-8')
+    cache = ExplanationCache(blocker / 'sub')
+    assessor = LiveAssessor(FakeGen([echo_gen()]), 'fake-model', PipelineConfig(), cache=cache)
+    resp, status, stored = assessor.assess_detail(case().request)
+    assert resp.path == 'llm' and status == 'miss' and stored is False
+    assert cache.put(assessor.key_fields(case().prepared), resp) is False
+
+
+def test_cache_key_uses_eval_packet_hash(tmp_path):
+    assessor, c = cached_client(tmp_path, FakeGen([echo_gen()]))
+    post(c, equipment_json())
+    _, entry = _stored(tmp_path)
+    assert entry['key'] == {'flag_id': case().prepared.flag_id, 'packet_hash': packet_hash(case().prepared),
+                            'model': 'fake-model', 'prompt_ver': assessor.prompt_ver}
+    assert set(entry) == {'key', 'response', 'created_at'}
+
+
+def test_cache_dir_from_env():
+    assert cache_dir_from_env({'SYSTEM2_CACHE_DIR': '/tmp/x'}) == Path('/tmp/x')
+    assert cache_dir_from_env({'SYSTEM2_CACHE_DIR': '  '}) == ROOT / 'cache'
+    assert cache_dir_from_env({}) == ROOT / 'cache'
+
+
+def test_env_assessor_uses_cache_dir(tmp_path):
+    a = assessor_from_env({'SYSTEM2_LLAMA_URL': URL, 'SYSTEM2_MODEL': 'm', 'SYSTEM2_CACHE_DIR': str(tmp_path)})
+    assert isinstance(a.cache, ExplanationCache) and a.cache.root == tmp_path
+
+
+def test_prompts_and_evaluation_never_read_the_cache():
+    for name in ('prompts.py', 'evaluation.py', 'dataset.py'):
+        src = (ROOT / 'analyst' / name).read_text(encoding='utf-8')
+        for needle in ('from .live', 'analyst.live', 'import live', 'ExplanationCache', 'SYSTEM2_CACHE_DIR'):
+            assert needle not in src, (name, needle)
+
+
+# ── precompute ───────────────────────────────────────────────────────────────────────────────
+
+def test_load_requests_accepts_all_forms(tmp_path):
+    assert len(load_requests([DATA])) == 6
+    assert [s for s, _ in load_requests([FIXTURE])] == ['%s[0]' % FIXTURE]
+    req = equipment_json()
+    lst, jl = tmp_path / 'list.json', tmp_path / 'reqs.jsonl'
+    lst.write_text(json.dumps([req, {'request': req}]), encoding='utf-8')
+    jl.write_text(json.dumps(req) + '\n\n' + json.dumps(req) + '\n', encoding='utf-8')
+    assert len(load_requests([lst])) == 2 and len(load_requests([jl])) == 2
+    assert len(load_requests([DATA, FIXTURE, lst, jl])) == 11
+
+
+def test_load_requests_names_bad_source_and_index(tmp_path):
+    bad_req = copy.deepcopy(equipment_json())
+    bad_req['context']['allowed_actions'] = 5
+    lst = tmp_path / 'list.json'
+    lst.write_text(json.dumps([equipment_json(), bad_req]), encoding='utf-8')
+    with pytest.raises(ValueError, match=r'list\.json\[1\]'):
+        load_requests([lst])
+    lst.write_text(json.dumps([{'flag_id': True, 'flag': {}, 'context': {}}]), encoding='utf-8')
+    with pytest.raises(ValueError, match=r'list\.json\[0\]'):
+        load_requests([lst])
+
+
+def sufficient_items():
+    return [(s, r) for s, r in load_requests([DATA]) if not normalize_packet(r).insufficient_context]
+
+
+def test_precompute_twice_generates_nothing_second_time(tmp_path, capsys):
+    fake = FakeGen([echo_gen()])
+    assessor = LiveAssessor(fake, 'fake-model', PipelineConfig(), cache=ExplanationCache(tmp_path / 'c'))
+    items = sufficient_items()
+    first = run_precompute(items, assessor)
+    assert first['requests'] == len(items) == 5 and first['generated'] == 5 and first['cached'] == 0
+    assert first['not_stored'] == 0 and first['latency']['n'] == 5
+    calls = len(fake.calls)
+    second = run_precompute(items, assessor)
+    assert len(fake.calls) == calls
+    assert second['cached'] == second['requests'] == 5 and second['generated'] == 0
+    mutated = copy.deepcopy(items)
+    body = mutated[0][1].model_dump()
+    body['context']['facts'][0]['fact'] += ' Rechecked.'
+    mutated[0] = (mutated[0][0], type(items[0][1]).model_validate(body))
+    third = run_precompute(mutated, assessor)
+    assert third['generated'] == 1 and third['cached'] == 4 and len(fake.calls) == calls + 1
+    out = capsys.readouterr().out
+    assert 'flag %d | hit | path llm' % normalize_packet(items[1][1]).flag_id in out
+
+
+def test_precompute_insufficient_never_calls_model(tmp_path):
+    fake = FakeGen([echo_gen()])
+    assessor = LiveAssessor(fake, 'fake-model', PipelineConfig(), cache=ExplanationCache(tmp_path / 'c'))
+    items = [(s, r) for s, r in load_requests([DATA]) if normalize_packet(r).insufficient_context]
+    for _ in range(2):
+        c = run_precompute(items, assessor)
+        assert c['insufficient_context'] == 1 and c['generated'] == 0 and c['not_stored'] == 1
+    assert fake.calls == []
+
+
+def test_precompute_main_without_url_exits_2(monkeypatch, tmp_path):
+    for name in LIVE_ENV:
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(SystemExit) as e:
+        precompute_main(['--requests', str(DATA), '--model', 'm', '--cache-dir', str(tmp_path)])
+    assert e.value.code == 2
+
+
+def test_precompute_main_rejects_bad_input_with_1(monkeypatch, tmp_path):
+    for name in LIVE_ENV:
+        monkeypatch.delenv(name, raising=False)
+    bad_file = tmp_path / 'bad.json'
+    bad_file.write_text('[{"flag_id": 0}]', encoding='utf-8')
+    with pytest.raises(SystemExit) as e:
+        precompute_main(['--requests', str(bad_file), '--model-url', URL, '--model', 'm',
+                         '--cache-dir', str(tmp_path / 'c')])
+    assert e.value.code == 1
+    assert not (tmp_path / 'c').exists()
