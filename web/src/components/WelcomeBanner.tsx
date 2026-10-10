@@ -7,15 +7,17 @@ import { TypeIn } from "./TypeIn";
    still knows what the console is claiming.
 
    The background is .hero-gradient in globals.css, next to the tokens it
-   reads — see the note there for why it is not an inline style. By default
-   the ramp cycles slowly through the four named presets; BannerControls can
-   pin it to any one of them, and the theme-aware default takes over when
-   motion is reduced. The scrim over them is load-bearing, not decoration: white
-   text clears 4.5:1 on the blue and purple stops unaided but only reaches
-   2.98:1 on the warm end, and which stop the text sits over depends on the
-   viewport width. Its strength is per-preset, so the worst case stays above
-   4.5:1 on every ramp rather than only on the one this was first tuned
-   against.
+   reads — see the note there for why it is not an inline style. By default it
+   runs as a lamp: the three stops drift on coprime loops while the ramp's axis
+   breathes and two soft bodies of colour wander across the card, so it is
+   always changing and never repeats a frame. BannerControls can pin the
+   palette to a named preset — the lamp keeps moving, the colours stop — and
+   the theme-aware default takes over when motion is reduced. The scrim over
+   it all is load-bearing, not decoration: white text clears 4.5:1 on the blue
+   and purple stops unaided but only reaches 2.98:1 on the warm end, and which
+   stop the text sits over depends on the viewport width and on where the
+   bodies happen to be. Auto's single scrim is solved against the brightest
+   frame of its brightest track; the presets keep their own.
 
    MOTION. The card arrives (12px rise), the headline types itself in, and the
    claim and the action float up behind it. Read order and arrival order are
