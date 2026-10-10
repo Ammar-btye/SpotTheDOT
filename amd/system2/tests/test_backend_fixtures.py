@@ -19,7 +19,15 @@ KEY = "backend-fixture-key-0123456789"
 
 
 def test_backend_fixture_categories_present():
-    assert {p.stem for p in FILES} >= {"equipment", "robot_health", "navigation"}
+    assert {p.stem for p in FILES} == {
+        "equipment", "robot_health", "navigation", "data_quality", "mission", "insufficient_context"}
+
+
+def test_remaining_cases_are_backend_examples():
+    names = {p.stem for p in FILES}
+    assert "mission" in names
+    assert "insufficient_context" in names
+    assert "data_quality" in names
 
 
 @pytest.mark.parametrize("path", FILES, ids=lambda p: p.stem)
