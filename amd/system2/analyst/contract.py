@@ -18,7 +18,7 @@ Decisions (plan 01-01, open to veto before web integrates):
 from datetime import datetime
 from typing import Annotated, Dict, List, Literal, Optional, Tuple, Union, get_args
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 CONTRACT_VERSION = "2026-10-10.1"
 
@@ -100,6 +100,16 @@ class Flag(_Model):
     source: Source = "system1"
     split: Optional[Split] = None
 
+    @model_validator(mode="after")
+    def _kind_rules(self) -> "Flag":
+        if self.kind == "action" and (self.action_id is None or self.category == "mission_health"):
+            raise ValueError("action flag needs action_id and a non-mission category, got %r / %r"
+                             % (self.action_id, self.category))
+        if self.kind == "mission" and (self.action_id is not None or self.category != "mission_health"):
+            raise ValueError("mission flag needs action_id None and category 'mission_health', got %r / %r"
+                             % (self.action_id, self.category))       # decision A2
+        return self
+
 
 class Row(_Model):
     id: RowId
@@ -123,6 +133,34 @@ class ContextPacket(_Model):
     missing: List[Section] = []
     question: Annotated[str, Field(min_length=1, max_length=300)]     # last, per R2
 
+    def ids(self) -> List[str]:
+        """Every row ID, in SECTIONS order then row order."""
+        return [r.id for sec in SECTIONS for r in getattr(self, sec)]
+
+    @model_validator(mode="after")
+    def _rows_and_actions(self) -> "ContextPacket":
+        for sec in SECTIONS:
+            bad = [r.id for r in getattr(self, sec) if r.id[0] != SECTION_PREFIX[sec]]
+            if bad:
+                raise ValueError("section %r only takes %s# rows, got %r" % (sec, SECTION_PREFIX[sec], bad))
+        ids = self.ids()
+        dup = sorted({i for i in ids if ids.count(i) > 1})
+        if dup:
+            raise ValueError("duplicate row IDs %r" % dup)
+        if len(set(self.allowed_actions)) != len(self.allowed_actions):
+            raise ValueError("duplicate allowed_actions %r" % self.allowed_actions)
+        extra = [a for a in self.allowed_actions if a not in ACTIONS_BY_CATEGORY[self.flag.category]]
+        if extra:
+            raise ValueError("allowed_actions %r not allowed for category %r" % (extra, self.flag.category))
+        if self.validator_action is not None and self.validator_action not in self.allowed_actions:
+            raise ValueError("validator_action %r not in allowed_actions" % self.validator_action)
+        if len(set(self.missing)) != len(self.missing):
+            raise ValueError("duplicate missing sections %r" % self.missing)
+        full = [sec for sec in self.missing if getattr(self, sec)]
+        if full:
+            raise ValueError("sections %r are listed as missing but have rows" % full)
+        return self
+
 
 class Evidence(_Model):
     claim: Annotated[str, Field(min_length=1, max_length=300)]
@@ -136,6 +174,15 @@ class Explanation(_Model):
     recommended_action: Action
     confidence: Confidence
     insufficient_context: bool
+
+    @model_validator(mode="after")
+    def _evidence_rules(self) -> "Explanation":
+        if not self.insufficient_context and not self.evidence:
+            raise ValueError("a sufficient-context explanation needs at least one evidence item")
+        if self.insufficient_context and self.recommended_action != "manual_review":
+            raise ValueError("insufficient context must recommend 'manual_review', got %r"
+                             % self.recommended_action)  # no LLM runs on insufficient context (PKT-04)
+        return self
 
 
 class Meta(_Model):
@@ -157,3 +204,19 @@ class AssessResponse(_Model):
     explanation: Explanation
     packet: ContextPacket
     meta: Meta
+
+    @model_validator(mode="after")
+    def _grounded(self) -> "AssessResponse":
+        if self.flag_id != self.packet.flag.flag_id:
+            raise ValueError("flag_id %r != packet.flag.flag_id %r" % (self.flag_id, self.packet.flag.flag_id))
+        known = set(self.packet.ids())
+        cited = [i for ev in self.explanation.evidence for i in ev.ids if i not in known]
+        if cited:
+            raise ValueError("evidence cites row IDs %r that are not in the packet" % cited)
+        if self.explanation.recommended_action not in self.packet.allowed_actions:
+            raise ValueError("recommended_action %r not in packet.allowed_actions %r"
+                             % (self.explanation.recommended_action, self.packet.allowed_actions))
+        if self.explanation.insufficient_context != bool(self.packet.missing):
+            raise ValueError("insufficient_context %r disagrees with packet.missing %r"
+                             % (self.explanation.insufficient_context, self.packet.missing))
+        return self
