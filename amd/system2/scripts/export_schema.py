@@ -1,13 +1,13 @@
-"""Export the System 2 contract (analyst/contract.py) as committed JSON Schemas for web type generation. Run from
+"""Export backend HTTP and legacy offline models as committed JSON Schemas for web type generation. Run from
 amd/system2:
 
     python scripts/export_schema.py                 # regenerate schema/*.json after a contract change
     python scripts/export_schema.py --check         # exit 1 if any committed schema drifted (T-01-14)
 
 Writes schema/flag.schema.json, packet.schema.json, assess_request.schema.json and assess_response.schema.json.
-Request-side models export in validation mode. The packet and the response export in serialization mode, so
-response fields that have defaults are still marked required and the generated TypeScript types do not make them
-optional. Keys are never sorted: property order is part of the contract (the Phase 2 grammar depends on it).
+Request-side models export in validation mode. The packet and response export in serialization mode,
+respecting each model's required/default settings. Keys are never sorted: property order is part of
+the contract (the Phase 2 grammar depends on it).
 """
 import argparse
 import json
@@ -52,7 +52,7 @@ def export(out_dir: Path, check: bool) -> List[str]:
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Export analyst/contract.py as JSON Schema files.")
+    ap = argparse.ArgumentParser(description="Export backend HTTP and legacy offline JSON Schema files.")
     ap.add_argument("--out", default=str(ROOT / "schema"))
     ap.add_argument("--check", action="store_true", help="compare only; exit 1 if any schema is stale")
     args = ap.parse_args()

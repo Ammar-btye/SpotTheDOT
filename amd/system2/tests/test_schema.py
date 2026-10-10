@@ -1,4 +1,4 @@
-"""Committed JSON Schemas (amd/system2/schema/) must match analyst/contract.py exactly, in contract property order.
+"""Committed schemas match backend HTTP and legacy offline models in contract property order.
 
 Run: uv run --no-project --with-requirements amd/system2/requirements.txt python -m pytest amd/system2/tests -q
 """
@@ -91,3 +91,57 @@ def test_equipment_http_matches_published_models():
         schema = _load(filename)
         schema.pop("$comment")
         assert schema == model.model_json_schema(mode=mode)
+
+
+BACKEND_EXAMPLES = ("equipment", "robot_health", "navigation", "data_quality", "mission", "insufficient_context")
+
+
+@pytest.mark.parametrize("name", BACKEND_EXAMPLES)
+def test_backend_fixture_pair_matches_published_contract(name):
+    pair = json.loads((ROOT / "fixtures/backend" / (name + ".json")).read_text(encoding="utf-8"))
+    request = copy.deepcopy(pair["request"])
+    request["future_backend_field"] = {"nested": "additive input"}
+    assert BackendAssessRequest.model_validate(request).flag_id == request["flag_id"]
+    response = BackendAssessResponse.model_validate(pair["response"])
+    assert response.flag_id == request["flag_id"]
+    unexpected_output = dict(pair["response"], future_backend_field="not allowed")
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        BackendAssessResponse.model_validate(unexpected_output)
+
+
+def test_published_response_vocabulary_and_nested_strictness():
+    schema = _load("assess_response.schema.json")
+    assert schema["$defs"]["BackendEvidence"]["additionalProperties"] is False
+    assert schema["properties"]["confidence"]["enum"] == ["high", "medium", "low"]
+    actions = schema["$defs"]["BackendAction"]["enum"]
+    assert "MANUAL_REVIEW" in actions
+    assert all(action == action.upper() for action in actions)
+    assert set(schema["required"]) == set(EXPLANATION_ORDER) | {"flag_id", "path"}
+    assert schema["properties"]["model"]["default"] == "stub"
+    assert schema["properties"]["latency_ms"]["default"] == 0
+    assert schema["properties"]["tokens_per_sec"]["default"] is None
+    pair = json.loads((ROOT / "fixtures/backend/equipment.json").read_text(encoding="utf-8"))
+    response = dict(pair["response"], confidence="medium")
+    assert BackendAssessResponse.model_validate(response).confidence == "medium"
+    with pytest.raises(ValidationError):
+        BackendAssessResponse.model_validate(dict(response, confidence="med"))
+    with pytest.raises(ValidationError):
+        BackendAssessResponse.model_validate(dict(response, recommended_action="monitor"))
+    response = copy.deepcopy(pair["response"])
+    response["evidence"][0]["future_field"] = "unexpected"
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        BackendAssessResponse.model_validate(response)
+
+
+def test_export_drift_is_exact_text_and_read_only(tmp_path):
+    export(tmp_path, check=False)
+    path = tmp_path / "assess_response.schema.json"
+    original = path.read_text(encoding="utf-8")
+    drifted = original.rstrip("\n")
+    assert json.loads(drifted) == json.loads(original)
+    path.write_text(drifted, encoding="utf-8")
+    assert export(tmp_path, check=True) == [path.name]
+    assert path.read_text(encoding="utf-8") == drifted
+    path.unlink()
+    assert export(tmp_path, check=True) == [path.name]
+    assert not path.exists()
