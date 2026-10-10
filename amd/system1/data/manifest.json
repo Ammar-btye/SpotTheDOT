@@ -1,0 +1,236 @@
+{
+  "policy_version": "2026-10-10.1",
+  "seed": 20261010,
+  "holdout_fold": 2,
+  "folds": [
+    [
+      "M002",
+      "M003",
+      "M004",
+      "M010",
+      "M014",
+      "M015",
+      "M022",
+      "M025",
+      "M026"
+    ],
+    [
+      "M001",
+      "M005",
+      "M007",
+      "M008",
+      "M011",
+      "M016",
+      "M021",
+      "M024",
+      "M027"
+    ],
+    [
+      "M006",
+      "M009",
+      "M012",
+      "M013",
+      "M017",
+      "M018",
+      "M019",
+      "M020",
+      "M023"
+    ]
+  ],
+  "holdout_missions": [
+    "M006",
+    "M009",
+    "M012",
+    "M013",
+    "M017",
+    "M018",
+    "M019",
+    "M020",
+    "M023"
+  ],
+  "train_missions": [
+    "M001",
+    "M002",
+    "M003",
+    "M004",
+    "M005",
+    "M007",
+    "M008",
+    "M010",
+    "M011",
+    "M014",
+    "M015",
+    "M016",
+    "M021",
+    "M022",
+    "M024",
+    "M025",
+    "M026",
+    "M027"
+  ],
+  "synthetic_missions": {
+    "train": 120,
+    "calib": 30,
+    "holdout": 40
+  },
+  "rows": {
+    "train": 3654,
+    "calib": 630,
+    "benchmark": 1557
+  },
+  "benchmark_dropped_as_duplicate_of_train": 0,
+  "segments": {
+    "train": {
+      "train_synthetic/triage": 1320,
+      "train_synthetic/predict": 1200,
+      "train_real/triage": 594,
+      "train_real/predict": 540
+    },
+    "calib": {
+      "calib_synthetic/triage": 330,
+      "calib_synthetic/predict": 300
+    },
+    "benchmark": {
+      "synthetic/triage": 440,
+      "synthetic/predict": 400,
+      "real/triage": 297,
+      "real/predict": 270,
+      "counterfactual/triage": 150
+    }
+  },
+  "label_distribution": {
+    "train": {
+      "anomaly_expected": {
+        "A": 272,
+        "B": 1468
+      },
+      "category": {
+        "data_quality": 104,
+        "equipment": 273,
+        "navigation": 133,
+        "none": 917,
+        "robot_health": 313
+      },
+      "escalate": {
+        "A": 556,
+        "B": 1358
+      },
+      "failure_mode": {
+        "data_quality": 242,
+        "navigation": 76,
+        "none": 1399,
+        "robot_health": 23
+      },
+      "mission_misleading": {
+        "A": 146,
+        "B": 28
+      },
+      "priority": {
+        "P1": 85,
+        "P2": 471,
+        "P3": 434,
+        "P4": 924
+      },
+      "reading_trust": {
+        "A": 1144,
+        "B": 267,
+        "C": 329
+      },
+      "will_fail": {
+        "A": 341,
+        "B": 1399
+      }
+    },
+    "benchmark": {
+      "anomaly_expected": {
+        "A": 97,
+        "B": 573
+      },
+      "category": {
+        "data_quality": 63,
+        "equipment": 133,
+        "navigation": 44,
+        "none": 390,
+        "robot_health": 190
+      },
+      "escalate": {
+        "A": 287,
+        "B": 600
+      },
+      "failure_mode": {
+        "data_quality": 88,
+        "navigation": 28,
+        "none": 545,
+        "robot_health": 9
+      },
+      "mission_misleading": {
+        "A": 48,
+        "B": 19
+      },
+      "priority": {
+        "P1": 51,
+        "P2": 236,
+        "P3": 198,
+        "P4": 402
+      },
+      "reading_trust": {
+        "A": 474,
+        "B": 155,
+        "C": 191
+      },
+      "will_fail": {
+        "A": 125,
+        "B": 545
+      }
+    },
+    "benchmark_real": {
+      "anomaly_expected": {
+        "A": 39,
+        "B": 231
+      },
+      "category": {
+        "data_quality": 12,
+        "equipment": 36,
+        "navigation": 6,
+        "none": 174,
+        "robot_health": 42
+      },
+      "escalate": {
+        "A": 45,
+        "B": 252
+      },
+      "failure_mode": {
+        "data_quality": 33,
+        "navigation": 6,
+        "none": 225,
+        "robot_health": 6
+      },
+      "mission_misleading": {
+        "A": 15,
+        "B": 12
+      },
+      "priority": {
+        "P1": 12,
+        "P2": 33,
+        "P3": 69,
+        "P4": 183
+      },
+      "reading_trust": {
+        "A": 165,
+        "B": 42,
+        "C": 63
+      },
+      "will_fail": {
+        "A": 45,
+        "B": 225
+      }
+    }
+  },
+  "state_tokens": {
+    "checked": true,
+    "max": 251,
+    "mean": 116.6,
+    "over_budget": 0,
+    "budget": 320
+  }
+}

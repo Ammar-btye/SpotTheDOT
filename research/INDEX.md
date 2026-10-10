@@ -8,7 +8,12 @@ One line per file. Open a file only when the task needs it. Grep `research/` bef
 ## Our project (Knight Hacks IX build)
 - [knighthacks-ix-tracks.md](knighthacks-ix-tracks.md): the sponsor challenges we entered (verbatim prompts) and the AMD server specs.
 - [spot-data-insights-2026-10-09.md](spot-data-insights-2026-10-09.md): findings from NextEra's SPOT data. 21 of 26 "COMPLETED" missions hide failures; there's a battery cliff at ≤25%; about 60% of V2's gain is battery.
-- [tech-databricks-neon-2026-10-09.md](tech-databricks-neon-2026-10-09.md): Databricks is cloud-only (Free Edition, not on the AMD box); the SQL Statement API → Neon sync plan; Neon branching for demos.
+- [tech-databricks-neon-2026-10-09.md](tech-databricks-neon-2026-10-09.md): **Databricks part superseded** (dropped 2026-10-10, see decisions). The Neon sections still apply: serverless driver, branching for demos, Neon Auth.
+- [tech-laya-rocm-finetune-2026-10-10.md](tech-laya-rocm-finetune-2026-10-10.md): Laya on gfx1151. Probably works but untested (SDPA, no flash-attn). Use eager mode, no `laya[fast]`, soft-ce loss, ≥350 updates; watch for prior collapse (#963).
+- [tech-system1-alternatives-2026-10-10.md](tech-system1-alternatives-2026-10-10.md): Laya is sound after fine-tuning + calibration. Benchmark it against logistic regression, gradient boosting and TabICL. Time-series foundation models don't fit (3–7 points per asset).
+- [tech-cascade-alarm-mgmt-2026-10-10.md](tech-cascade-alarm-mgmt-2026-10-10.md): serial Laya → validate → LLM can't catch Laya misses, so run rules ‖ Laya in parallel with a rules priority floor. ISA-18.2/EEMUA 191 priorities (5/15/80), alarm-rate metrics.
+- [tech-smalldata-finetune-eval-2026-10-10.md](tech-smalldata-finetune-eval-2026-10-10.md): split by mission (3 folds of 9), keep synthetic separate from the real test, mission-level bootstrap CIs, calibrate on held-out data rather than random items.
+- [tech-system2-context-distill-2026-10-10.md](tech-system2-context-distill-2026-10-10.md): System 2 LLM. Prompt + grammar-JSON first, LoRA distillation only as a stretch. Templated SQL context packets with row-ID citations, plus numeric faithfulness checks.
 - [tech-amd-rocm-hf-serving-2026-10-09.md](tech-amd-rocm-hf-serving-2026-10-09.md): serving on gfx1151. Primary is llama.cpp built for ROCm/HIP; fallback is AMD's PyTorch wheels + `transformers serve`. VLM is Qwen3.5-9B (backup Qwen3-VL-8B). Untested on our hardware.
 
 ## Our event (Knight Hacks / Florida)

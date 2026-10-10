@@ -1,0 +1,6 @@
+# System 1 (Laya) fine-tuning + benchmark.
+# On the AMD box, install the ROCm PyTorch wheels FIRST (see README), then: pip install -r requirements.txt
+# Pinned: triage/harness.py uses laya.train internals that may change between releases.
+laya==0.4.1
+scikit-learn>=1.5
+huggingface_hub>=0.30

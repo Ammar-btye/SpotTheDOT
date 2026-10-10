@@ -11,26 +11,23 @@
 ## 2. The big picture
 
 ```
-                         ┌──────────────────────── LOCAL REPO: KNIGHTHACKS/ ────────────────────────┐
+                         ┌──────────────────────── web/ app (laptop or Vercel) ─────────────────────┐
   SPOT replay.ndjson ──▶ │ replay streamer ──▶ /api/ingest ──▶ SYSTEM 1 "Triage" (rules + stats)     │
   (+ readings/anomalies  │  (scripts/replay)     (Next.js)        │ every event, <5 ms, explainable   │
    joined by action_id)  │                                        ▼                                    │
                          │                        ┌──────── NEON POSTGRES ────────┐                  │
-                         │  Web UI (Next.js) ◀──▶ │ raw tables · events · flags   │ ◀── sync ──┐     │
-                         │  Figma-designed        │ assessments · insights · risk │            │     │
+                         │  Web UI (Next.js) ◀──▶ │ raw tables · events · flags   │ ◀── risk ──┐     │
+                         │  Figma-designed        │ assessments · insights · risk │   scores   │     │
                          │  Live / Review / Map   └──────────────┬────────────────┘            │     │
                          │                                       │ escalated flags             │     │
                          │                     system2 worker ◀──┘ (score ≥ threshold)         │     │
                          └──────────────────────────────┬──────────────────────────────────────┼─────┘
                                                         │ HTTPS + API key                      │
-                         ┌──── AMD REPO: KNIGHTHACKS-AMD/ (Radeon Cloud, gfx1151, ROCm) ────┐ │
+                         ┌──── amd/ folder, runs on Radeon Cloud (gfx1151, ROCm) ───────────┐ │
                          │ FastAPI "System 2 Analyst" ── HF open-source VLM/LLM on ROCm     │ │
                          │ /v1/assess  /v1/vision  /v1/debrief  /v1/bench  /health          │ │
-                         └──────────────────────────────────────────────────────────────────┘ │
-                         ┌──── DATABRICKS FREE EDITION (Databricks' cloud, not our server) ──┐ │
-                         │ CSVs → Unity Catalog volume → bronze/silver/gold Delta tables     │─┘
-                         │ failure-risk model (MLflow) → risk + insight tables               │
-                         └───────────────────────────────────────────────────────────────────┘
+                         │ Laya failure-risk model (amd/system1) ── batch risk scores ──────├─┘
+                         └──────────────────────────────────────────────────────────────────┘
 ```
 
 ## 3. Each piece: what it is, why it exists, and which prize it serves
@@ -45,7 +42,7 @@
 - **Design rules (Figma track: navigation, flows, accessibility):** status is never shown by color alone (color + icon + word); keyboard-navigable; WCAG AA contrast; dark operator theme (like Orbit) with a light-mode toggle. Design prizes go to a cohesive identity, a named persona or mascot (`winners-design-creative-categories`), so give SPOT's AI a name and a consistent visual language.
 
 ### 3.2 Neon Postgres → **Neon**
-- **What:** the single operational database. It holds the raw kit tables, live `events`, System 1 `flags`, System 2 `assessments`, the Databricks `insights`/`risk_scores`, and operator `acknowledgements`.
+- **What:** the single operational database. It holds the raw kit tables, live `events`, System 1 `flags`, System 2 `assessments`, the `insights` views, Laya's `risk_scores`, and operator `acknowledgements`.
 - **Why it's "meaningful", not a logo:** it's the real-time event store the Live page reads, the join point between all three systems, and the audit trail of every AI decision. Plus **Neon branching**: a `demo` branch we reset before each judge, so the replay starts clean every time.
 
 ### 3.3 System 1 "Triage": local, rules + statistics → **NextEra, Best AI**
@@ -55,14 +52,14 @@
   | Failed action | `ACTION_FAILED` (weighted by failure_type) | 21 of 26 completed missions hide failures |
   | Priority anomaly | severity × asset criticality ≥ threshold | severity ≠ priority (insight #6) |
   | Battery cliff | battery ≤ 30% | 33% success at ≤25% (insight #2) |
-  | Risky location | Databricks risk score for (waypoint, action type) is high | WP09/WP02/WP15 (insight #4) |
+  | Risky location | Laya's failure-risk score for the upcoming action is high | WP09/WP02/WP15 (insight #4) |
   | Suspect reading | quality QUESTIONABLE, or value outside the band for its type | insight #7 |
   | Silent failure | `MISSION_COMPLETED` but the mission has failures or HIGH+ anomalies | insight #1 |
 - **Escalation:** score ≥ threshold, any CRITICAL item, or any CRITICAL asset → the flag is queued for System 2.
 - **Why rules first:** fast, free, explainable, and the "Explainability" criterion is in NextEra's brief. Winners put deterministic gates around the LLM. Autobelay (1st) and Killswitch Capital (3rd) at lablab's Alpaca hackathon both let "the LLM propose, deterministic code enforce" (`winners-lablab-ai`). Here the gates decide *what gets AI attention*.
 
 ### 3.4 System 2 "Analyst": Hugging Face model on AMD ROCm → **AMD, Hugging Face, Best AI**
-- **What:** a FastAPI service in the **separate `KNIGHTHACKS-AMD` repo**, running an open-source HF vision-language model on the Radeon 8060S with ROCm. Endpoints:
+- **What:** a FastAPI service in the **`amd/` folder of this repo**, running an open-source HF vision-language model on the Radeon 8060S with ROCm. Endpoints:
   - `POST /v1/assess`: a flag + context packet (asset history, waypoint stats, risk score, optional image) → **Orbit-style JSON**: `question`, `answer`, `reasoning`, `recommended_action`, `confidence`, `severity_assessment`.
   - `POST /v1/vision`: an inspection image → structured reading (e.g., gauge psi, thermal hotspot °C) to cross-check against the logged value.
   - `POST /v1/debrief`: mission stats → a plain-English after-action summary for the Review page.
@@ -70,22 +67,18 @@
   - `GET /health`.
 - **Why:** AMD-sponsored winners showed *measured* gains. RadeonFlow won AMD's Developer Challenge on benchmark speedups. Nota's PASCAL-MoE won because it "demonstrated… quantitative evaluation" (`winners-taikai-hackerearth-enterprise`). Last year at Knight Hacks, Restful Knights (Best Overall) and EchoAI (Best AI + AMD) both ran on ROCm, and Lawgorithm won AMD with ROCm + Hugging Face + Postgres, nearly our stack (`winners-knighthacks-history`).
 - **The AMD/HF metric we'll show:** "System 1 handled X% of events; System 2 ran only on Y escalations, at Z tokens/s on Radeon." The model, dataset card and (stretch) LoRA adapter get published to the HF Hub for "meaningful use of the HF ecosystem."
-- **Why a separate repo:** it runs on the AMD box with its own Python/ROCm environment. The local app only knows `AMD_API_URL` + `AMD_API_KEY`. If the server is down, the worker marks assessments `pending` and the UI shows System 1's reasons, so the demo never breaks.
+- **Why its own folder (not its own repo):** it runs on the AMD box with its own Python/ROCm environment and its own `requirements.txt`, sharing no code with `web/`. On the box you clone this repo and only work in `amd/`. The boundary is the HTTP API, not git: the app only knows `AMD_API_URL` + `AMD_API_KEY`. One repo means judges review everything in one place, and contract changes land in one commit. If the server is down, the worker marks assessments `pending` and the UI shows System 1's reasons, so the demo never breaks.
 
-### 3.5 Databricks: analytics + failure-risk model → **Databricks**
-- **What:** three notebooks in `databricks/` (versioned here, run in Databricks Free Edition):
-  1. `01_ingest_bronze`: upload the kit CSVs to a Unity Catalog volume, then bronze Delta tables.
-  2. `02_silver_gold_insights`: joins; True Mission Health; reliability by waypoint, action type, battery band and config; **the V1-vs-V2-at-matched-battery analysis** (insight #3).
-  3. `03_failure_risk_model`: train P(action fails | waypoint, action type, battery, config, environment), track it in MLflow, and write `risk_scores` (waypoint × action type × battery band).
-  Gold tables sync into Neon (`npm run sync:databricks`), and System 1 uses `risk_scores` live. **That's the "connects Databricks to a useful result" line in the prompt.**
-- **Why not on the AMD server:** Databricks is a managed cloud platform; it can't be installed on our box. Its job is the data and ML layer, and AMD's job is model inference.
-- Databricks-sponsored winners used 4–5 platform features (`winners-taikai-hackerearth-enterprise`): volumes, Delta, SQL, MLflow, plus an AI/BI dashboard if time allows.
+### 3.5 Failure-risk scores: Laya on AMD ROCm → **AMD, Hugging Face**
+- **What:** the Laya model (`convaiinnovations/laya`, an HF decision model), fine-tuned in `amd/system1` on the kit's real outcomes. Before each action it answers `will_fail`, `failure_mode` and `anomaly_expected` with calibrated probabilities. We batch-score the kit's actions on the AMD box and load the probabilities into Neon `risk_scores`. System 1's "Risky location" rule reads them live.
+- **Analytics:** True Mission Health, reliability by waypoint, action type, battery band and config, and **the V1-vs-V2-at-matched-battery analysis** (insight #3) are SQL views over the raw tables in Neon (`insights`).
+- **Why on AMD:** all model work stays on our Radeon hardware, with one fewer platform to set up. A fine-tune with a held-out evaluation is the measured-gains story that AMD and HF judges reward (`winners-taikai-hackerearth-enterprise`, `winners-lablab-ai`).
 
 ### 3.6 Replay streamer + System 2 worker (local scripts)
 - `scripts/replay.ts`: reads `replay.ndjson`, enriches each action with its readings and anomalies, and POSTs to `/api/ingest` at a configurable speed (e.g., 20×). This is the "real time" half of the prompt.
 - `scripts/system2-worker.ts`: polls Neon for escalated flags, builds the context packet, calls AMD `/v1/assess`, and stores the result. It's decoupled so a slow GPU never stalls the live feed.
 
-## 4. The contract between the repos (keep it in sync)
+## 4. The contract between `web/` and `amd/` (keep it in sync)
 ```http
 POST {AMD_API_URL}/v1/assess        Header: X-API-Key: {AMD_API_KEY}
 { "flag_id": "F-123", "event": {...}, "reasons": ["Battery 18% ≤ 30%", "..."],
@@ -101,8 +94,8 @@ POST {AMD_API_URL}/v1/assess        Header: X-API-Key: {AMD_API_KEY}
 ## 5. Neon schema (summary; full DDL in `web/db/schema.sql`)
 Raw tables: `missions`, `actions`, `readings`, `anomalies`, `locations`, `assets` (loaded from the kit).
 Live tables: `events` (ingested replay), `flags` (System 1 output: score, reasons[], escalated), `assessments` (System 2 output, with model, latency and tokens/s), `acknowledgements` (operator ack/resolve).
-Analytics tables (from Databricks): `insights` (named metrics), `risk_scores`.
+Analytics tables: `insights` (SQL views of named metrics over the raw tables), `risk_scores` (Laya's probabilities, scored on the AMD box).
 
 ## 6. Build order (aim: end to end by Saturday noon, per `winners-playbook-judging`)
-1. Neon schema + seed → 2. System 1 + ingest + replay → 3. Live + Overview pages (mocked System 2) → 4. AMD service up, worker connected → 5. Databricks notebooks + sync → 6. Map + Review pages → 7. Figma polish, accessibility, bench numbers, HF Hub push → 8. Devpost, video, pitch.
+1. Neon schema + seed → 2. System 1 + ingest + replay → 3. Live + Overview pages (mocked System 2) → 4. AMD service up, worker connected → 5. Laya fine-tune + risk scores into Neon → 6. Map + Review pages → 7. Figma polish, accessibility, bench numbers, HF Hub push → 8. Devpost, video, pitch.
 If time runs short, **cut depth, not the core loop**: replay → triage → explain → act.
