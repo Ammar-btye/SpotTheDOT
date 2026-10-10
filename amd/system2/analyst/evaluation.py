@@ -339,8 +339,8 @@ def aggregate(rows: List[dict], kind: str) -> dict:
     return {
         'kind': kind, 'cases': n, 'sufficient_cases': len(suff),
         'public_response_valid': rate(sum(r['public_valid'] for r in rows), n),
-        'guarded_insufficient': {'cases': len(guarded),
-                                 'safe_manual_review': rate(sum(_safe_manual_review(r) for r in guarded), len(guarded))},
+        'guarded_insufficient': {'cases': len(guarded), 'safe_manual_review': rate(
+            sum(_safe_manual_review(r) for r in guarded), len(guarded))},
         'first_attempt': {k: rate(sum(r['first_attempt'][k] for r in gen), len(gen))
                           for k in ('parsed',) + CHECKS + ('accepted',)},
         'final': {k: rate(sum(r['final'][k] for r in suff), len(suff)) for k in CHECKS},
@@ -464,7 +464,8 @@ def report(metrics: dict) -> str:
             ('model accepted (llm+retry)', lambda a: _fmt(a['generation']['model_accepted'])),
             ('retry', lambda a: _fmt(a['generation']['retry'])),
             ('fallback to template', lambda a: _fmt(a['generation']['fallback'])),
-            ('guarded insufficient: safe manual review', lambda a: _fmt(a['guarded_insufficient']['safe_manual_review']))]
+            ('guarded insufficient: safe manual review',
+             lambda a: _fmt(a['guarded_insufficient']['safe_manual_review']))]
     rows += [('first attempt %s' % k, (lambda k: lambda a: _fmt(a['first_attempt'][k]))(k)) for k in CHECKS]
     rows += [('final %s' % k, (lambda k: lambda a: _fmt(a['final'][k]))(k)) for k in CHECKS]
     rows += [('action agreement with validator', lambda a: _fmt(a['action']['agreement_with_validator'])),
