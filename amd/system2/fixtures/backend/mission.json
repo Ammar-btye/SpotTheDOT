@@ -1,0 +1,159 @@
+{
+  "name": "mission",
+  "description": "Representative offline integration example, not headline eval data. Mission-level silent-failure flag from real kit event mis-M001 (training mission M001): reported COMPLETED although 2 of 10 actions failed and a HIGH VISUAL_DEFECT was raised on Heat Exchanger 08. Demonstrates kind mission / category mission_health. All numbers computed from amd/system1/data/kit with triage.policy 2026-10-10.1. Database flag ID is illustrative; MCP IDs retained; allowed_actions list represents budget trimming.",
+  "request": {
+    "flag_id": 1001,
+    "flag": {
+      "flag_id": 1001,
+      "title": "Did mission M001 really complete cleanly?",
+      "status": "OPEN",
+      "category": "mission",
+      "priority": "P2",
+      "mission_id": "M001",
+      "action_id": null,
+      "escalated": true,
+      "reasons": [
+        {
+          "rule": "silent_failure",
+          "detail": "Reported COMPLETED but 2 of 10 actions failed"
+        },
+        {
+          "rule": "serious_anomaly",
+          "detail": "1 HIGH anomaly: VISUAL_DEFECT on Heat Exchanger 08"
+        }
+      ]
+    },
+    "context": {
+      "packet_version": "1",
+      "facts": [
+        {
+          "id": "F1",
+          "fact": "A mission reported COMPLETED with failed actions and a HIGH anomaly is misleading and gets P2 under policy 2026-10-10.1."
+        },
+        {
+          "id": "F2",
+          "fact": "21 of the 26 kit missions reported COMPLETED have at least one failed action (27 kit missions in total)."
+        }
+      ],
+      "allowed_actions": [
+        "REVIEW_MISSION",
+        "RERUN_FAILED_ACTIONS",
+        "CHARGE_BEFORE_NEXT_MISSION",
+        "MONITOR"
+      ],
+      "question": "Did mission M001 really complete cleanly?",
+      "insufficient_context": false,
+      "suggested_action": "REVIEW_MISSION",
+      "event": {
+        "mission": {
+          "id": "mission:M001",
+          "reported_status": "COMPLETED",
+          "duration_min": 31,
+          "start_battery_pct": 82,
+          "end_battery_pct": 15,
+          "actions_total": 10,
+          "actions_failed": 2,
+          "anomalies_by_severity": {
+            "LOW": 1,
+            "MEDIUM": 0,
+            "HIGH": 1,
+            "CRITICAL": 0
+          },
+          "actions": [
+            {
+              "id": "action:A0001",
+              "action_type": "NAVIGATION",
+              "status": "FAILED",
+              "failure_type": "OBSTACLE_DETECTION",
+              "sequence": 1,
+              "duration_sec": 67,
+              "battery_pct": 75,
+              "asset_id": "HX-201",
+              "location_id": "WP05"
+            },
+            {
+              "id": "action:A0009",
+              "action_type": "VISUAL_INSPECTION",
+              "status": "FAILED",
+              "failure_type": "SENSOR_TIMEOUT",
+              "sequence": 9,
+              "duration_sec": 61,
+              "battery_pct": 22,
+              "asset_id": "HX-208",
+              "location_id": "WP03",
+              "anomaly_type": "VISUAL_DEFECT",
+              "severity": "HIGH"
+            }
+          ]
+        }
+      },
+      "flag": {
+        "id": "flag:1001",
+        "flag_id": 1001,
+        "title": "Did mission M001 really complete cleanly?",
+        "status": "OPEN",
+        "category": "mission",
+        "priority": "P2",
+        "mission_id": "M001",
+        "action_id": null,
+        "escalated": true,
+        "reasons": [
+          {
+            "rule": "silent_failure",
+            "detail": "Reported COMPLETED but 2 of 10 actions failed"
+          },
+          {
+            "rule": "serious_anomaly",
+            "detail": "1 HIGH anomaly: VISUAL_DEFECT on Heat Exchanger 08"
+          }
+        ]
+      },
+      "policy": [
+        {
+          "id": "policy:silent_failure",
+          "kind": "policy",
+          "title": "silent_failure",
+          "text": "A mission reported COMPLETED with failed actions and a HIGH anomaly is misleading and gets P2 under policy 2026-10-10.1."
+        }
+      ],
+      "citation_ids": [
+        "F1",
+        "F2",
+        "mission:M001",
+        "action:A0001",
+        "action:A0009",
+        "flag:1001",
+        "policy:silent_failure"
+      ]
+    },
+    "event": {
+      "event_id": "mis-M001",
+      "event_type": "MISSION"
+    },
+    "reasons": [
+      "Reported COMPLETED but 2 of 10 actions failed",
+      "1 HIGH anomaly: VISUAL_DEFECT on Heat Exchanger 08"
+    ],
+    "request_id": "fixture-mission"
+  },
+  "response": {
+    "evidence": [
+      {
+        "claim": "A mission reported COMPLETED with failed actions and a HIGH anomaly is misleading and gets P2 under policy 2026-10-10.1.",
+        "ids": [
+          "F1"
+        ]
+      }
+    ],
+    "answer": "A mission reported COMPLETED with failed actions and a HIGH anomaly is misleading and gets P2 under policy 2026-10-10.1.",
+    "question": "Did mission M001 really complete cleanly?",
+    "recommended_action": "REVIEW_MISSION",
+    "confidence": "medium",
+    "insufficient_context": false,
+    "flag_id": 1001,
+    "model": "stub",
+    "latency_ms": 0,
+    "tokens_per_sec": null,
+    "path": "stub"
+  }
+}

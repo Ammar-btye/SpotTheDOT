@@ -28,6 +28,35 @@ def test_remaining_cases_are_backend_examples():
     assert "mission" in names
     assert "insufficient_context" in names
     assert "data_quality" in names
+    mission = json.loads((ROOT / "fixtures/backend/mission.json").read_text())["request"]
+    assert mission["flag"]["category"] == "mission"
+    assert mission["context"]["event"]["mission"]["id"] == "mission:M001"
+    assert isinstance(mission["context"]["allowed_actions"], list)
+    insufficient = json.loads((ROOT / "fixtures/backend/insufficient_context.json").read_text())["response"]
+    assert insufficient["insufficient_context"] is True
+    assert insufficient["evidence"] == []
+    assert insufficient["recommended_action"] == "MANUAL_REVIEW"
+
+
+@pytest.mark.parametrize("path", FILES, ids=lambda p: p.stem)
+def test_backend_examples_exclude_holdout_missions(path):
+    holdout = set(json.loads((ROOT.parent / "system1/data/manifest.json").read_text())["holdout_missions"])
+    assert holdout
+    request = json.loads(path.read_text())["request"]
+
+    def check(value):
+        if isinstance(value, dict):
+            assert value.get("mission_id") not in holdout
+            identifier = value.get("id", "")
+            if identifier.startswith("mission:"):
+                assert identifier.split(":", 1)[1] not in holdout
+            for child in value.values():
+                check(child)
+        elif isinstance(value, list):
+            for child in value:
+                check(child)
+
+    check(request)
 
 
 @pytest.mark.parametrize("path", FILES, ids=lambda p: p.stem)

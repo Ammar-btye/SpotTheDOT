@@ -1,5 +1,5 @@
 """Fixture-set tests: every fixtures/*.json pair is contract-valid, grounded in its own packet, drawn from a training
-mission only (T-01-08), and served schema-valid by the stub (ROADMAP Phase 1 criteria 2 and 3).
+mission only (T-01-08). Public HTTP round trips live in test_backend_fixtures.py.
 
 Grounding (T-01-09): fixtures model grounded output. Numbers are matched only against packet row values (`Row.data`)
 and row text, never the flag, `ref`, timestamps, dates/policy versions or IDs (A0009, M015, HX-208, WP03, act-...),
@@ -20,15 +20,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
-
-from analyst.api import FIXTURES, KEY_HEADER, MIN_KEY_LEN, create_app  # noqa: E402
+from analyst.api import FIXTURES  # noqa: E402
 from analyst.contract import CATEGORIES, CONTRACT_VERSION, SECTIONS, AssessRequest, AssessResponse  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]                         # amd/system2
 MANIFEST = ROOT.parent / "system1" / "data" / "manifest.json"      # System 1's mission-level split
-TEST_KEY = "fixture-test-key-0123456789abcdef"                       # 33 characters
-assert len(TEST_KEY) >= MIN_KEY_LEN
 
 FIXTURE_FILES = sorted(FIXTURES.glob("*.json"))
 ROW_ID = re.compile(r"\b[EFSWI][1-9][0-9]?\b")
@@ -106,11 +102,6 @@ def _ungrounded(resp: dict) -> list:
     return out
 
 
-@pytest.fixture(scope="module")
-def client() -> TestClient:
-    return TestClient(create_app(api_key=TEST_KEY))
-
-
 def test_fixture_files_present():
     assert FIXTURE_FILES, "no fixtures in %s" % FIXTURES
 
@@ -179,16 +170,6 @@ def test_grounding_accepts_grounded():
     assert _ungrounded(resp) == []
 
 
-@pytest.mark.parametrize("path", FIXTURE_FILES, ids=lambda p: p.stem)
-def test_stub_serves_fixture(client, path):
-    d = _load(path)
-    r = client.post("/v1/assess", json=d["request"], headers={KEY_HEADER: TEST_KEY})
-    assert r.status_code == 200, (path.stem, r.text)
-    body = AssessResponse.model_validate(r.json())
-    assert body.explanation.model_dump(mode="json") == d["response"]["explanation"]
-    assert body.meta.model == "stub"
-
-
 # ── coverage: what web can render ────────────────────────────────────────────
 
 def _all() -> list:
@@ -210,15 +191,6 @@ def test_one_insufficient_fixture():
     assert resp["explanation"]["evidence"] == []
     assert resp["explanation"]["recommended_action"] == "manual_review"
     assert resp["meta"]["path"] == "insufficient_context"
-
-
-def test_stub_routes_insufficient_by_flag_id(client):
-    d = _load(FIXTURES / "insufficient_context.json")
-    r = client.post("/v1/assess", json=d["request"], headers={KEY_HEADER: TEST_KEY})
-    assert r.status_code == 200, r.text
-    body = AssessResponse.model_validate(r.json())
-    assert body.explanation.insufficient_context is True
-    assert body.flag_id == "flag:act-A9999"
 
 
 def test_paths_cover_ui_states():
