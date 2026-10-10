@@ -104,3 +104,11 @@ def test_empty_forbidden_diagnostics_are_dropped_not_rejected(tmp_path, key, emp
 def test_no_holdout_override_and_seed_import_exclusive(tmp_path):
     assert run('--seed', '--output', tmp_path / 'x', '--holdout-fold', '0').returncode != 0
     assert run('--seed', '--input', DATA, '--output', tmp_path / 'x').returncode != 0
+
+
+def test_published_dataset_is_world_readable(tmp_path):
+    """Regenerated packets must be readable by other users (e.g. UID 10001 in the image), not left at 0600."""
+    output = tmp_path / 'approved.json'
+    result = run('--seed', '--output', output)
+    assert result.returncode == 0, result.stderr
+    assert output.stat().st_mode & 0o777 == 0o644

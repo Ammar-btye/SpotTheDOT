@@ -64,6 +64,7 @@ def publish(value, output: Path):
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
+        os.chmod(temporary, 0o644)    # NamedTemporaryFile creates 0600; the image's non-root user must read it
         os.replace(temporary, output)
     finally:
         if temporary is not None and temporary.exists():
