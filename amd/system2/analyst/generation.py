@@ -195,7 +195,8 @@ class LlamaGenerator:
         if type(max_tokens) is not int or max_tokens <= 0:
             raise ValueError('max_tokens must be a positive integer')
         self.endpoint = url.rstrip('/') + '/v1/chat/completions'
-        # http.client directly (no environment proxies): the call owns its socket, so the deadline can close it
+        # http.client directly: no environment proxies and no redirects (a 3xx is GenerationError('http'), so the
+        # Authorization header never reaches another host); the call owns its socket, so the deadline can close it
         self._https, self._host, self._port = parts.scheme == 'https', parts.hostname, parts.port
         self._target = parts.path.rstrip('/') + '/v1/chat/completions'
         self.model, self.max_tokens, self.timeout_s = model, max_tokens, float(timeout_s)

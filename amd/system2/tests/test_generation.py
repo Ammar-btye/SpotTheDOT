@@ -475,6 +475,53 @@ def test_api_key_only_in_header_and_url_scheme_checked(server):
             g.LlamaGenerator(bad)
 
 
+@pytest.mark.parametrize('status', [301, 302, 303, 307, 308])
+def test_redirect_is_refused_and_key_never_forwarded(status):
+    """A 3xx is an HTTP failure; the bearer key must never reach the host named in Location."""
+    g = gen()
+    seen = []
+
+    class Target(BaseHTTPRequestHandler):
+        def do_POST(self):
+            seen.append(dict(self.headers))
+            self.send_response(200)
+            self.end_headers()
+
+        do_GET = do_POST
+
+        def log_message(self, *args):
+            pass
+
+    target = ThreadingHTTPServer(('127.0.0.1', 0), Target)
+
+    class Redirect(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers['Content-Length']))
+            self.send_response(status)
+            self.send_header('Location', 'http://127.0.0.1:%d/steal' % target.server_port)
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    origin = ThreadingHTTPServer(('127.0.0.1', 0), Redirect)
+    workers = [threading.Thread(target=s.serve_forever, kwargs={'poll_interval': 0.02}, daemon=True)
+               for s in (target, origin)]
+    for w in workers:
+        w.start()
+    try:
+        generator = g.LlamaGenerator('http://127.0.0.1:%d' % origin.server_port, api_key='sekrit-llama-key-123')
+        with pytest.raises(g.GenerationError) as err:
+            generator(case('kit-equipment').prepared, ())
+        assert err.value.kind == 'http' and str(status) in err.value.detail
+        assert seen == []
+    finally:
+        for s in (target, origin):
+            s.shutdown()
+            s.server_close()
+
+
 def test_retry_errors_are_sanitized_single_lines():
     p = prompts()
     prepared = case('kit-equipment').prepared
