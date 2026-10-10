@@ -16,6 +16,7 @@ One line per file. Open a file only when the task needs it. Grep `research/` bef
 - [tech-smalldata-finetune-eval-2026-10-10.md](tech-smalldata-finetune-eval-2026-10-10.md): split by mission (3 folds of 9), keep synthetic separate from the real test, mission-level bootstrap CIs, calibrate on held-out data rather than random items.
 - [tech-system2-context-distill-2026-10-10.md](tech-system2-context-distill-2026-10-10.md): System 2 LLM. Prompt + grammar-JSON first, LoRA distillation only as a stretch. Templated SQL context packets with row-ID citations, plus numeric faithfulness checks.
 - [tech-amd-rocm-hf-serving-2026-10-09.md](tech-amd-rocm-hf-serving-2026-10-09.md): serving on gfx1151. Primary is llama.cpp built for ROCm/HIP; fallback is AMD's PyTorch wheels + `transformers serve`. VLM is Qwen3.5-9B (backup Qwen3-VL-8B). Untested on our hardware.
+- [tech-spot-vision-cv-2026-10-10.md](tech-spot-vision-cv-2026-10-10.md): reading the kit's thermal/acoustic/gauge/path images. Code computes numbers (VLMs score ~30% on gauges, fail thermal); RapidOCR + RANSAC axes; Qwen3.5-9B + mmproj; route from CSV, not CV; no CSV row links an image, so use synthetic renders + a `vision` segment; Orbit keyResults schema.
 
 - [tech-embedding-model-amd-2026-10-10.md](tech-embedding-model-amd-2026-10-10.md): embedding model for the pgvector RAG. Qwen3-Embedding-0.6B (1024-d, Apache-2.0) on ROCm sentence-transformers; fallback snowflake-arctic-embed-l-v2.0; exact search at our scale; Neon pgvector 0.8.x.
 
