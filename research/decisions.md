@@ -21,6 +21,9 @@ Single source of truth. Each entry is the decision plus why, in one or two lines
 - **System 2 plan (2026-10-10):** prompt + grammar-JSON + deterministic post-check first; LoRA is a gated stretch, shipped only if it beats the prompt baseline. Fine-tuning teaches format, not facts (research R5).
 - **System 2 model (2026-10-10):** chosen by an on-box bake-off of Qwen3.5-9B / 27B / 35B-A3B, on grounded quality within ≤15 s p95. That gives measured numbers for the AMD/HF pitch.
 - **System 2 owns the flag contract (2026-10-10):** typed Pydantic contract, with flags faked from `policy.py` until Laya output is wired in, so System 2 isn't blocked on System 1.
+- **System 2 adapts to the backend stack (2026-10-10, after 8aaac30):** the backend owns retrieval and POSTs one prepared MCP `get_flag_context` packet to System 2 on port 8083; the model does not call tools (tool loops break the ≤15 s p95). System 2 accepts the backend's request shape (unknown fields ignored, consumed fields validated, strict output), MCP action codes and doc_id citations, and drops its own CSV packet builder in favour of saved MCP packets.
+- **System 2 eval leakage rule (2026-10-10):** headline numbers only on controlled held-out packets with nothing after the event's time, no target labels and no previously generated explanations; action quality is scored against human labels, with agreement against the validator's `suggested_action` reported separately.
+- **AMD serving works on ROCm (2026-10-10):** Qwen3.5-9B Q4_K_M via a llama.cpp HIP build for gfx1151 ran fully on the GPU, 3/3 schema-valid replies, 35.6 tok/s generation, 12.4 s for 439 output tokens. Vulkan stays a fallback only.
 - **System 2 eval (2026-10-10):** headline numbers on real mission-held-out flags only, with bootstrap CIs and a human-checked judge; the templated explanation is both the fallback and the baseline. Only ~40 real anomalies, so synthetic data can't inflate the numbers.
 
 ## Pending

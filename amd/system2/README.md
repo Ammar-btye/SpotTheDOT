@@ -148,6 +148,30 @@ python scripts/export_schema.py --check    # exit 1 if a committed schema no lon
 `schema/` holds the generated JSON Schemas for web type generation: `flag.schema.json`, `packet.schema.json`,
 `assess_request.schema.json` and `assess_response.schema.json`. Do not edit them by hand.
 
+## Serving smoke test (AMD box)
+Proves one model loads on the gfx1151 GPU and answers one JSON-schema-constrained request (Phase 1.1, SRV-00). The
+Radeon Cloud Jupyter VMs have no root and no Docker, so llama.cpp is built in the home folder:
+
+```bash
+hf download unsloth/Qwen3.5-9B-GGUF Qwen3.5-9B-Q4_K_M.gguf --local-dir ~/models/q35
+git clone https://github.com/ggml-org/llama.cpp ~/llama.cpp && cd ~/llama.cpp
+HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)" \
+  cmake -S . -B build -DGGML_HIP=ON -DGPU_TARGETS=gfx1151 -DCMAKE_BUILD_TYPE=Release && cmake --build build -j "$(nproc)"
+~/llama.cpp/build/bin/llama-server -m ~/models/q35/Qwen3.5-9B-Q4_K_M.gguf \
+  -ngl all -fa on -lm none -c 16384 -rea off --host 127.0.0.1 --port 8080 --metrics
+# from amd/system2, in another terminal:
+python3 scripts/smoke_serve.py --backend rocm --runs 3 --max-tokens 1024
+```
+
+No ROCm on the machine: use the Vulkan prebuilt (`llama-<ver>-bin-ubuntu-vulkan-x64.tar.gz` from the llama.cpp
+releases) and `--backend vulkan`. Older builds reject `-ngl all`, `-lm` or `-rea`; use `-ngl 999 --no-mmap`.
+
+**Result (2026-10-10, Qwen3.5-9B Q4_K_M, ROCm build, Radeon 8060S):** 33/33 layers offloaded to `ROCm0`, 3/3 replies
+valid, 12.4 s per request for 1,450 prompt and 439 output tokens, generation 35.6 tok/s. Latency is generation-bound,
+so the output length is the main lever: 439 tokens exceeds the planned ~350 cap (the reply would truncate), so Phase 2
+caps the evidence list or raises `max_tokens` to ~512. The reported prompt tok/s reflects a warm prompt cache; rerun
+with an unseen `--fixture` for cold prefill speed.
+
 ## Interface with System 1 (to agree with Tyler)
 The `Flag` model in `analyst/contract.py` is now the agreed shape for System 1 to conform to: `escalate`, `priority`,
 `category`, `reading_trust`, their probabilities in `scores`, and the validator rules that fired in `reasons`.
