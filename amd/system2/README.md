@@ -6,10 +6,30 @@ matters and what to do**: it takes one escalated flag plus a short context packe
 row in the packet.
 
 Plan and evidence: `research/tech-system2-context-distill-2026-10-10.md` (recommendations R1–R7).
-API contract with `web/`: `analyst/contract.py` (contract `2026-10-10.2`) is the source of truth. It supersedes
-`docs/ARCHITECTURE.md` §4, which is kept only as history.
+The authoritative HTTP contract is [docs/backend-services-contract.md](../../docs/backend-services-contract.md)
+(`2026-10-10.backend.1`). Backend owns retrieval through MCP/SQL fallback and supplies `context`.
+The HTTP path does not build its own kit/Neon packet. Phase 1 `analyst/contract.py`, `schema/`, and
+`fixtures/*.json` remain legacy offline artifacts, including inputs for the serving feasibility smoke.
 
-## Build order
+## Current backend HTTP transport
+
+`POST /v1/assess` takes strict positive integer `flag_id`, object `flag`, and object `context`, with optional
+`request_id`, `event`, and `reasons`. The flat response contains `evidence[{claim,ids}]`, `answer`, `question`,
+`recommended_action`, `confidence` (`low | medium | high`), `insufficient_context`, `flag_id`, `model`,
+`latency_ms`, `tokens_per_sec`, and `path`. Actions use uppercase MCP vocabulary and packet membership;
+`MANUAL_REVIEW` is the documented safe extension. Citations resolve to actual supplied content.
+This phase serves `model=stub`; the full prompt/model pipeline remains Phase 2 work.
+
+Six current fixture pairs are `fixtures/backend/equipment.json`, `fixtures/backend/robot_health.json`,
+`fixtures/backend/navigation.json`, `fixtures/backend/data_quality.json`, `fixtures/backend/mission_health.json`,
+and `fixtures/backend/insufficient_context.json`. Use their `request` objects for HTTP calls.
+
+Native/compose System 2 port is **8083**; llama-server remains 8080. `SYSTEM2_API_KEY` is the primary secret;
+`AMD_API_KEY` is the compatibility alias. See [RUNNING.md](../../RUNNING.md) for current startup and compose.
+Authorization via `X-API-Key` precedes body parsing; `/health` is open. Native binds loopback; remote access uses
+`ssh -L 8083:127.0.0.1:8083 <user>@<amd-box>`. Compose callers use `http://system2:8083`.
+
+## Historical Phase 1 build order (offline)
 1. **Context packet builder** (R1–R2): `flag → packet` JSON under ~1,500 tokens, key facts first, every row with a short
    ID (`F#` derived facts, `S#` asset, `W#` waypoint, `I#` similar incidents). Reads the kit CSVs
    (`amd/system1/data/kit/`) for now; swaps to Neon views later.
@@ -23,7 +43,7 @@ API contract with `web/`: `analyst/contract.py` (contract `2026-10-10.2`) is the
 
 Prompt first. Fine-tuning is a gated stretch goal (R5), only if the pipeline works end to end.
 
-## Contract
+## Legacy offline contract
 All models live in `analyst/contract.py` and reject unknown fields (an extra field gets a 422). Types are strict, so
 the server accepts exactly what the exported JSON Schema allows: `"yes"` is not a boolean, `"5"` is not an integer,
 and a number is not a timestamp.
@@ -72,7 +92,7 @@ for every category, but a packet may leave it out. `mission_health` flags allow 
 Any change to the wire format bumps `CONTRACT_VERSION` in `analyst/contract.py`, and the JSON Schemas are then
 re-exported with `python scripts/export_schema.py`.
 
-## Fixtures
+## Legacy offline fixtures
 Each file in `fixtures/` holds a `request` and the `response` System 2 should give. Every one is built from real kit
 data from training missions only, and every number in its explanation appears in its packet.
 
@@ -90,7 +110,11 @@ The stub answers each request with the matching fixture's response, stamped with
 render every UI state. A request whose `flag_id` matches a fixture gets that fixture; otherwise it gets its category's
 fixture.
 
-## Run the stub
+## Historical Phase 1 stub commands (superseded)
+The commands below document the original offline fixture stub on 8000. For current HTTP startup, use
+`SYSTEM2_API_KEY=your-shared-secret uv run --no-project --with-requirements requirements.txt python scripts/serve.py --port 8083`
+from `amd/system2`, and send a `fixtures/backend/` request. The flag-only request and nested response below
+describe Phase 1 history, not the current service.
 Setup on the AMD box, from `amd/system2`:
 
 ```bash
@@ -145,10 +169,12 @@ python scripts/export_schema.py            # regenerate schema/*.json after a co
 python scripts/export_schema.py --check    # exit 1 if a committed schema no longer matches the contract
 ```
 
-`schema/` holds the generated JSON Schemas for web type generation: `flag.schema.json`, `packet.schema.json`,
+`schema/` holds the legacy offline generated JSON Schemas: `flag.schema.json`, `packet.schema.json`,
 `assess_request.schema.json` and `assess_response.schema.json`. Do not edit them by hand.
 
 ## Serving smoke test (AMD box)
+SRV-00 is already complete. This optional replay is not an execution prerequisite.
+See [evidence index](results/smoke/README.md) for the recorded GPU result's provenance and limits.
 Proves one model loads on the gfx1151 GPU and answers one JSON-schema-constrained request (Phase 1.1, SRV-00). The
 Radeon Cloud Jupyter VMs have no root and no Docker, so llama.cpp is built in the home folder:
 
@@ -167,12 +193,15 @@ No ROCm on the machine: use the Vulkan prebuilt (`llama-<ver>-bin-ubuntu-vulkan-
 releases) and `--backend vulkan`. Older builds reject `-ngl all`, `-lm` or `-rea`; use `-ngl 999 --no-mmap`.
 
 **Result (2026-10-10, Qwen3.5-9B Q4_K_M, ROCm build, Radeon 8060S):** 33/33 layers offloaded to `ROCm0`, 3/3 replies
-valid, 12.4 s per request for 1,450 prompt and 439 output tokens, generation 35.6 tok/s. Latency is generation-bound,
+valid under the original checker, 12.4 s per request for 1,450 prompt and 439 output tokens, generation 35.6 tok/s. Latency is generation-bound,
 so the output length is the main lever: 439 tokens exceeds the planned ~350 cap (the reply would truncate), so Phase 2
 caps the evidence list or raises `max_tokens` to ~512. The reported prompt tok/s reflects a warm prompt cache; rerun
 with an unseen `--fixture` for cold prefill speed.
+Cold prefill remains unmeasured; Vulkan was not benchmarked. The current checker validates the complete emitted
+schema, including evidence shape/types/caps; original validation checked keys/order and citation/action/confidence
+membership only. Current regression coverage is not a retrospective validation of absent raw GPU replies.
 
-## Interface with System 1 (to agree with Tyler)
+## Historical offline interface with System 1 (superseded on HTTP)
 The `Flag` model in `analyst/contract.py` is now the agreed shape for System 1 to conform to: `escalate`, `priority`,
 `category`, `reading_trust`, their probabilities in `scores`, and the validator rules that fired in `reasons`.
 Action-level flags use `kind` "action" with one of the four action categories. Mission-level flags use `kind`
