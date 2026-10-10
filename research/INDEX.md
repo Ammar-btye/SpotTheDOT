@@ -18,6 +18,7 @@ One line per file. Open a file only when the task needs it. Grep `research/` bef
 - [tech-amd-rocm-hf-serving-2026-10-09.md](tech-amd-rocm-hf-serving-2026-10-09.md): serving on gfx1151. Primary is llama.cpp built for ROCm/HIP; fallback is AMD's PyTorch wheels + `transformers serve`. VLM is Qwen3.5-9B (backup Qwen3-VL-8B). Untested on our hardware.
 
 - [tech-embedding-model-amd-2026-10-10.md](tech-embedding-model-amd-2026-10-10.md): embedding model for the pgvector RAG. Qwen3-Embedding-0.6B (1024-d, Apache-2.0) on ROCm sentence-transformers; fallback snowflake-arctic-embed-l-v2.0; exact search at our scale; Neon pgvector 0.8.x.
+- [tech-vision-datasets-hf-2026-10-10.md](tech-vision-datasets-hf-2026-10-10.md): HF image/audio data per SPOT inspection type. Gauges: MeasureBench (118 real pressure gauges, CC-BY-SA) + exact-truth synthetic sets; visual: corrosion/valve-well sets with boxes; acoustic: DCASE 2025 (valves) and MIMII pumps; **no labelled equipment-thermal set**. Kit images don't match the CSV readings.
 
 ## Our event (Knight Hacks / Florida)
 - [winners-knighthacks-history-2026-10-09.md](winners-knighthacks-history-2026-10-09.md): **Key file.** Knight Hacks VI–VIII and Project Launch 2026 winners (59), IX logistics and rubric, and every sponsor's past prompts plus its IX status. Hardware + AI for health/accessibility won Overall in 2023, 2024 and 2025.
