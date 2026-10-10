@@ -4,6 +4,7 @@
   python db/smoke_test.py                          # the three standard queries
   python db/smoke_test.py "pump bearing too hot"   # your own query (vector + hybrid)
   python db/smoke_test.py --roles                  # also check spot_mcp_reader permissions (needs a superuser URL)
+(If the knowledge graph exists it also runs a text, a vector and a 2-hop graph query; contract §7.)
 
 Env: DATABASE_URL, LOGS_DATABASE_URL, EMBED_URL, EMBED_MODEL, EMBED_DIM, EMBED_QUERY_PREFIX.
 """
@@ -46,6 +47,25 @@ def run(conn, client, mode, query):
     return rows
 
 
+def graph(conn, client):
+    """Graph RAG (contract §7): a name entry point, a vector entry point and a 2-hop neighbourhood."""
+    print("\n[graph] kg_nodes %d, kg_edges %d" % (conn.execute("SELECT count(*) FROM kg_nodes").fetchone()[0],
+                                                conn.execute("SELECT count(*) FROM kg_edges").fetchone()[0]))
+    t0 = time.perf_counter()
+    rows = conn.execute("SELECT node_id, score FROM match_kg_nodes_text('HX-204', NULL, 3)").fetchall()
+    print("   text 'HX-204' (%.0f ms): %s" % ((time.perf_counter() - t0) * 1000, rows))
+    vec = to_pgvector(client.embed(["robot lost localization"], kind="query")[0])
+    rows = conn.execute("SELECT node_id, similarity FROM match_kg_nodes(%s::vector, ARRAY['topic','failure_type'], 3)",
+                        (vec,)).fetchall()
+    print("   vector 'robot lost localization': %s" % [(n, round(s, 3)) for n, s in rows])
+    t0 = time.perf_counter()
+    rows = conn.execute("SELECT hop, array_to_string(path, ' '), weight FROM graph_neighborhood(ARRAY['location:WP05'], 2, "
+                        "NULL, ARRAY['failure_type','topic','manual'], 5)").fetchall()
+    print("   neighbourhood of location:WP05 (%.0f ms):" % ((time.perf_counter() - t0) * 1000))
+    for hop, path, w in rows:
+        print("     hop %d  w=%.3f  %s" % (hop, w, path))
+
+
 def check_roles(conn):
     """Create a throwaway login in spot_mcp_reader and verify: SELECT public ok, INSERT app ok, writes to public fail."""
     import psycopg
@@ -75,6 +95,11 @@ def check_roles(conn):
         expect("DELETE FROM documents WHERE false", False)
         expect("SELECT * FROM app.model_calls LIMIT 1", False)   # only call_id is readable (for RETURNING)
         expect("SELECT count(*) FROM raw.kit_rows", False)
+        if spotdb.has_table(conn, "public.kg_nodes"):          # Graph RAG (contract §7)
+            expect("SELECT count(*) FROM kg_edges", True)
+            expect("SELECT count(*) FROM match_kg_nodes_text('HX-204')", True)
+            expect("SELECT count(*) FROM graph_neighborhood(ARRAY['location:WP05'], 2)", True)
+            expect("DELETE FROM kg_nodes WHERE false", False)
     conn.execute("DELETE FROM app.mcp_tool_calls WHERE tool = 'smoke'")
     conn.execute("DROP ROLE smoke_mcp")
     return ok
@@ -89,6 +114,8 @@ def main():
         print("documents.%-14s %d" % (kind, n))
     for mode, q in queries:
         run(conn, client, mode, q)
+    if spotdb.has_table(conn, "public.kg_nodes"):
+        graph(conn, client)
     if "--roles" in sys.argv and not check_roles(conn):
         sys.exit("role check failed")
 

@@ -6,24 +6,38 @@
 # Service    Port  Profiles                 What
 # ---------  ----  -----------------------  -------------------------------------------------------------------
 # db         5433  local, hybrid            Postgres 17 + pgvector, local stand-in for Neon (host port: DB_PORT)
-# db-init    -     local, hybrid, neon      one-shot: migrate -> login users -> seed -> ingest (RAG) -> status
+# db-init    -     local, hybrid, neon      one-shot: migrate -> login users -> seed -> ingest (RAG) -> graph
+#                                           (knowledge graph, contract §7) -> status
 #                                           (seed is non-destructive: never overwrites flags or refills a demo)
 # embed      8081  local, models            Qwen3-Embedding-0.6B, OpenAI-compatible /v1/embeddings (TORCH_VARIANT)
 # system1    8082  local, models            Laya triage model, /v1/predict (TORCH_VARIANT; fine-tune mount)
 # mcp        8090  local, hybrid, neon      MCP context server for System 2 (streamable HTTP /mcp)
 # backend    8000  local, hybrid, neon      FastAPI dashboard API (/api/v1, /docs). ADMIN_TOKEN (header
 #                                           X-Admin-Token) guards /ops, /replay, POST /events; CORS_ORIGINS only
-# system2    8083  local, hybrid, neon, system2  Authenticated System 2 /v1/assess: packet-grounded stub (model=stub)
-#                                           by default; live checked pipeline when SYSTEM2_LLAMA_URL points at
-#                                           llama-server (e.g. http://host.docker.internal:18080 over an SSH tunnel).
+# system2    8083  local, hybrid, neon, system2  Authenticated System 2 /v1/assess (contract 2026-10-10.backend.2):
+#                                           packet-grounded stub (model=stub) by default; live checked pipeline when
+#                                           SYSTEM2_LLAMA_URL is set (the gateway, http://gateway:4000, or llama-server
+#                                           directly). Optional vision/ocr/image_b64 inputs (V# rows, annotated image).
 #                                           Kit mounted read-only at /app/kit (SPOT_KIT_DIR) for grounding.
+# gateway    4000  local, hybrid, neon, system2  LiteLLM proxy: one OpenAI-compatible endpoint, Bearer LITELLM_MASTER_KEY.
+#                                           Aliases system2 / system2-vision -> llama-server (LLAMA_URL, VISION_LLAMA_URL;
+#                                           an SSH tunnel to the AMD box by default), system1 -> Laya /v1/predict,
+#                                           embed -> embed. No DB, UI or telemetry. GET /health/liveliness is public.
+# vision     8084  local, hybrid, neon, vision  CPU OCR + code readers (thermal/gauge/spectrogram/Orbit Key Results),
+#                                           POST /v1/vision, /v1/ocr. Never calls a model. Required VISION_API_KEY (X-API-Key; /health open).
+# orchestrator 8085 local, hybrid, neon     LangGraph: /v1/assess (MCP context -> Laya -> route -> vision -> System 2
+#                                           -> template, ORCH_DEADLINE_S 40) and /v1/ask (bounded read-only MCP tool
+#                                           loop). X-API-Key ORCHESTRATOR_API_KEY. The backend uses it only when
+#                                           ORCHESTRATOR_URL is set (else /explain keeps its own MCP -> System 2 path).
 #
 # Profiles:
 #   local   everything in Docker on CPU (testing; Laya ~3-8 s per event, embedding ~2.3 s per query)
-#   hybrid  db + db-init + mcp + backend + system2 in Docker; SYSTEM1_URL / EMBED_URL in .env point at the AMD GPU box,
-#           where system1 and embed run natively (the AMD Jupyter VMs have no root and can't run Docker)
+#   hybrid  db + db-init + mcp + backend + system2 + gateway + vision + orchestrator in Docker; SYSTEM1_URL / EMBED_URL
+#           (and LLAMA_URL for the gateway) in .env point at the AMD GPU box, where system1, embed and llama-server
+#           run natively (the AMD Jupyter VMs have no root and can't run Docker)
 #   neon    Neon replaces `db`: DATABASE_URL (owner, db-init), BACKEND_DATABASE_URL, MCP_DATABASE_URL in .env
-#   system2 System 2 only, for independent integration checks (stub; live when SYSTEM2_LLAMA_URL is set)
+#   system2 System 2 + gateway only, for independent integration checks (stub; live when SYSTEM2_LLAMA_URL is set)
+#   vision  vision/OCR service only, for independent checks (COMPOSE_PROFILES=vision)
 #   models  embed + system1 on CPU, to pair with neon:  COMPOSE_PROFILES=neon,models
 #
 # Conventions (keep them when adding a service):
@@ -32,6 +46,9 @@
 #   - Every setting is an env var with a `${VAR:-default}` that works for the local profile; shared blocks are
 #     anchors below (x-db-urls, x-embed-env). Published ports bind to BIND_ADDR (127.0.0.1 by default).
 #   - Dependencies that some profile doesn't start use `required: false`.
+#   - Shared secrets are anchors below (x-keys) with dev defaults, so `make up` works without a .env (audit P-1:
+#     an empty required key crash-loops the service). Ports bind to 127.0.0.1; set real keys in .env before
+#     BIND_ADDR=0.0.0.0 or any shared host. Timeout chain: docs/RUNNING.md "Timeouts and keys".
 #   - Roles (db/migrations/007_roles.sql): db-init = owner; backend = spot_app member; mcp and system1's call
 #     logging = spot_mcp_reader member (scripts/db_login_roles.py creates the login users).
 
@@ -45,6 +62,12 @@ x-db-urls:   # documentation of the default connection strings (each is overrida
   owner: &db-owner-url ${DATABASE_URL:-postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/spot}
   app:   &db-app-url ${BACKEND_DATABASE_URL:-postgresql://${SPOT_APP_USER:-spot_app_user}:${SPOT_APP_PASSWORD:-spot_app_dev}@db:5432/spot}
   mcp:   &db-mcp-url ${MCP_DATABASE_URL:-postgresql://${SPOT_MCP_USER:-spot_mcp_user}:${SPOT_MCP_PASSWORD:-spot_mcp_dev}@db:5432/spot}
+
+x-keys:   # shared secrets: one default per secret, used by both sides of each hop (overridable from .env)
+  system2: &system2-key ${SYSTEM2_API_KEY:-spot-system2-dev-key-change-me}               # X-API-Key backend/orch -> system2
+  orchestrator: &orchestrator-key ${ORCHESTRATOR_API_KEY:-spot-orchestrator-dev-key-change-me}   # backend -> orchestrator
+  gateway: &gateway-key ${LITELLM_MASTER_KEY:-sk-spot-gateway-dev-key-change-me}         # Bearer for every gateway caller
+  vision: &vision-key ${VISION_API_KEY:-spot-vision-dev-key-change-me}                    # X-API-Key orchestrator -> vision
 
 x-embed-env: &embed-env   # contract §1: every embedding client and the server agree on these
   EMBED_URL: ${EMBED_URL:-http://embed:8081}
@@ -69,7 +92,8 @@ services:
       timeout: 3s
       retries: 20
 
-  # One-shot: migrate -> login users -> seed -> ingest (embeds the RAG corpus) -> status. Idempotent.
+  # One-shot: migrate -> login users -> seed -> ingest (embeds the RAG corpus) -> graph (rebuilds kg_nodes/kg_edges,
+  # embeds only changed node summaries; DB_GRAPH_ARGS=--no-embed skips embedding) -> status. Idempotent.
   # `seed` is non-destructive (audit M5): insert-if-missing, and the demo baseline (events + flags) loads only on
   # the first seed of a database, so `up` never overwrites live/acked flags or refills a reset demo. Never add
   # --force-reseed here; run it by hand: docker compose run --rm --no-deps --entrypoint db/job.sh db-init seed --force-reseed
@@ -96,7 +120,7 @@ services:
     command:
       - >-
         db/job.sh migrate && python scripts/db_login_roles.py && db/job.sh seed
-        && db/job.sh ingest ${DB_INGEST_ARGS:-} && db/job.sh status
+        && db/job.sh ingest ${DB_INGEST_ARGS:-} && db/job.sh graph ${DB_GRAPH_ARGS:-} && db/job.sh status
 
   # ── models (CPU in Docker; on the AMD box they run natively, see the hybrid profile) ─────────────
   embed:
@@ -139,6 +163,31 @@ services:
       - "hf-cache:/models/hf"     # same volume as embed (both use <HF_HOME>/hub)
       - "${LAYA_CHECKPOINT_DIR:-./amd/system1/checkpoints}:/models/checkpoints:ro"
 
+  # LiteLLM gateway (amd/gateway/README.md). llama-server is never in compose: LLAMA_URL defaults to the SSH tunnel
+  # (ssh -N -L 18080:127.0.0.1:8080 <amd-box>). Retries 0, no fallbacks, no cooldowns (config.yaml). No depends_on:
+  # a proxy needs no upstream at start, and system2/orchestrator should not wait for Laya's CPU warm-up.
+  # DATABASE_URL is deliberately absent (the gateway refuses to start with one).
+  gateway:
+    <<: *service
+    build: {context: amd/gateway}
+    image: spot-gateway:compose
+    profiles: [local, hybrid, neon, system2]
+    environment:
+      <<: *embed-env                      # EMBED_URL (EMBED_MODEL/EMBED_DIM are ignored here)
+      LITELLM_MASTER_KEY: *gateway-key    # sk- prefix, >= 16 chars
+      LLAMA_URL: ${LLAMA_URL:-http://host.docker.internal:18080}
+      VISION_LLAMA_URL: ${VISION_LLAMA_URL:-}   # empty = same llama-server as LLAMA_URL (started with --mmproj)
+      LLAMA_API_KEY: ${LLAMA_API_KEY:-}         # llama-server --api-key, if set
+      SYSTEM1_URL: ${SYSTEM1_URL:-http://system1:8082}
+      # Per-alias upstream timeouts. System 2's own deadline (15 s; 25 s with an image) closes its socket first, so
+      # 30 s for vision only matters for direct callers (eval scripts).
+      SYSTEM2_TIMEOUT_S: ${GATEWAY_SYSTEM2_TIMEOUT_S:-15}
+      VISION_TIMEOUT_S: ${GATEWAY_VISION_TIMEOUT_S:-30}
+      SYSTEM1_TIMEOUT_S: ${GATEWAY_SYSTEM1_TIMEOUT_S:-10}
+      EMBED_TIMEOUT_S: ${GATEWAY_EMBED_TIMEOUT_S:-10}
+    ports: ["${BIND_ADDR:-127.0.0.1}:${GATEWAY_PORT:-4000}:4000"]
+    # Non-root runtime (uid 10001) and HEALTHCHECK (/health/liveliness) are inherited from the image.
+
   # System 2 receives prepared context from the backend; no MCP/database access.
   system2:
     <<: *service
@@ -146,19 +195,48 @@ services:
     image: spot-system2:compose
     profiles: [local, hybrid, neon, system2]
     environment:
-      SYSTEM2_API_KEY: ${SYSTEM2_API_KEY:-}
+      SYSTEM2_API_KEY: *system2-key
       SYSTEM2_HOST: 0.0.0.0
       SYSTEM2_PORT: "8083"
       SPOT_KIT_DIR: /app/kit   # entity catalog + saved-packet row checks (offline grounding modules)
-      # Live mode: empty SYSTEM2_LLAMA_URL = stub. Set it (and SYSTEM2_MODEL) to llama-server, e.g.
+      # Live mode: empty SYSTEM2_LLAMA_URL = stub. Through the gateway: SYSTEM2_LLAMA_URL=http://gateway:4000,
+      # SYSTEM2_MODEL=qwen3.5-9b-q4km (hidden alias of `system2`, keeps cache keys). Directly: llama-server, e.g.
       # http://host.docker.internal:18080 over ssh -L 18080:127.0.0.1:8080 <amd-box>. The image has no writable
       # cache default: SYSTEM2_CACHE_DIR needs a writable mount, else live mode runs without the explanation cache.
       SYSTEM2_LLAMA_URL: ${SYSTEM2_LLAMA_URL:-}
       SYSTEM2_MODEL: ${SYSTEM2_MODEL:-}
+      SYSTEM2_VISION_MODEL: ${SYSTEM2_VISION_MODEL:-system2-vision}   # only for requests with image_b64
+      # Bearer for the gateway; a llama-server without --api-key ignores it.
+      SYSTEM2_LLAMA_API_KEY: ${SYSTEM2_LLAMA_API_KEY:-${LITELLM_MASTER_KEY:-sk-spot-gateway-dev-key-change-me}}
+      SYSTEM2_IMAGE_DEADLINE_S: ${SYSTEM2_IMAGE_DEADLINE_S:-25}   # requests with image_b64 only (text: 15 s); (0, 120]
       SYSTEM2_CACHE_DIR: ${SYSTEM2_CACHE_DIR:-}
+    depends_on:
+      gateway: {condition: service_healthy, required: false}
     ports: ["${BIND_ADDR:-127.0.0.1}:8083:8083"]
     volumes: ["./amd/system1/data/kit:/app/kit:ro"]
     # Non-root runtime and healthcheck are inherited from the image.
+
+  # Vision/OCR (docs/vision-contract.md): code readers compute every number; no model calls, no runtime internet
+  # (OCR models are baked into the image). The orchestrator turns its readings into System 2's V# rows.
+  vision:
+    <<: *service
+    build: {context: amd/vision}
+    image: spot-vision:compose
+    profiles: [local, hybrid, neon, vision]
+    environment:
+      VISION_HOST: 0.0.0.0
+      VISION_PORT: "8084"
+      VISION_API_KEY: *vision-key                            # required: the service refuses to start without one
+      VISION_MAX_IMAGE_BYTES: ${VISION_MAX_IMAGE_BYTES:-12000000}
+      VISION_MAX_PIXELS: ${VISION_MAX_PIXELS:-12000000}
+      VISION_MAX_CONCURRENCY: ${VISION_MAX_CONCURRENCY:-2}   # analyses at once (~2 GB RSS budget), then queue
+      VISION_QUEUE_TIMEOUT_S: ${VISION_QUEUE_TIMEOUT_S:-3}   # queue wait before 503
+      VISION_WORK_MAX_SIDE: ${VISION_WORK_MAX_SIDE:-1280}
+      VISION_CACHE_SIZE: ${VISION_CACHE_SIZE:-64}
+      VISION_OCR_THREADS: ${VISION_OCR_THREADS:--1}
+      VISION_LOG_LEVEL: ${VISION_LOG_LEVEL:-info}
+    ports: ["${BIND_ADDR:-127.0.0.1}:8084:8084"]
+    # Non-root runtime (uid 10001) and healthcheck are inherited from the image.
 
   # ── application ────────────────────────────────────────────────────────────────────────────────
   mcp:
@@ -181,6 +259,38 @@ services:
       MCP_PORT: "8090"
     ports: ["${BIND_ADDR:-127.0.0.1}:8090:8090"]
 
+  # LangGraph orchestrator: /v1/assess (MCP context -> System 1 -> route -> vision -> System 2 -> template) and
+  # /v1/ask (System 2 model + read-only MCP tools, <= 4 calls). No DB access. docs/orchestrator-contract.md.
+  orchestrator:
+    <<: *service
+    build: {context: amd/orchestrator}
+    image: spot-orchestrator:compose
+    profiles: [local, hybrid, neon]
+    depends_on:
+      mcp: {condition: service_healthy}
+      system2: {condition: service_healthy, required: false}
+      gateway: {condition: service_healthy, required: false}
+      vision: {condition: service_healthy, required: false}
+    environment:
+      ORCHESTRATOR_API_KEY: *orchestrator-key
+      MCP_URL: ${MCP_URL:-http://mcp:8090/mcp}
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+      GATEWAY_URL: ${GATEWAY_URL:-http://gateway:4000}
+      GATEWAY_KEY: *gateway-key
+      VISION_URL: ${VISION_URL:-http://vision:8084}
+      VISION_API_KEY: *vision-key
+      SYSTEM2_URL: ${SYSTEM2_URL:-http://system2:8083}   # same value the backend uses
+      SYSTEM2_API_KEY: *system2-key
+      DEMO_IMAGES: ${DEMO_IMAGES:-0}                     # 1 = pair kit sample images by action_type (pairing "demo")
+      ORCH_DEADLINE_S: ${ORCH_DEADLINE_S:-40}            # < backend REQUEST_DEADLINE_S (45) so the backend can store
+      ORCH_SYSTEM2_BUDGET_S: ${ORCH_SYSTEM2_BUDGET_S:-20}   # System 2: 15 s generation deadline + its checks
+      ORCH_SYSTEM2_IMAGE_BUDGET_S: ${ORCH_SYSTEM2_IMAGE_BUDGET_S:-28}   # with an image: SYSTEM2_IMAGE_DEADLINE_S + ~3 s
+      ASK_DEADLINE_S: ${ASK_DEADLINE_S:-30}
+      ASK_MAX_TOOL_CALLS: ${ASK_MAX_TOOL_CALLS:-4}
+    ports: ["${BIND_ADDR:-127.0.0.1}:8085:8085"]
+    volumes: ["./web/public/kit/inspection:/app/demo-images:ro"]
+    # Non-root runtime (uid 10001) and healthcheck (/health) come from the image.
+
   backend:
     <<: *service
     build: {context: ., dockerfile: backend/Dockerfile}
@@ -191,6 +301,7 @@ services:
       mcp: {condition: service_healthy}
       system1: {condition: service_healthy, required: false}
       system2: {condition: service_healthy, required: false}
+      orchestrator: {condition: service_healthy, required: false}
       embed: {condition: service_healthy, required: false}
     environment:
       <<: *embed-env
@@ -201,7 +312,12 @@ services:
       MCP_URL: ${MCP_URL:-http://mcp:8090/mcp}
       MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
       SYSTEM2_URL: ${SYSTEM2_URL:-http://system2:8083}
-      SYSTEM2_API_KEY: ${SYSTEM2_API_KEY:-}
+      SYSTEM2_API_KEY: *system2-key
+      # Opt-in: http://orchestrator:8085 routes /explain through LangGraph first (and enables POST /api/v1/ask);
+      # unset = /explain exactly as before. docs/backend-services-contract.md "Orchestrator path".
+      ORCHESTRATOR_URL: ${ORCHESTRATOR_URL:-}
+      ORCHESTRATOR_API_KEY: *orchestrator-key
+      ORCHESTRATOR_TIMEOUT_S: ${ORCHESTRATOR_TIMEOUT_S:-42}   # = REQUEST_DEADLINE_S - 3 s reserve; orchestrator: 40
       # Sized for CPU (local profile). On the AMD GPU these can drop to the contract defaults (5/10/15/60).
       SYSTEM1_TIMEOUT_S: ${SYSTEM1_TIMEOUT_S:-30}               # explicit batch calls (forecast, /system1/predict)
       SYSTEM1_INGEST_TIMEOUT_S: ${SYSTEM1_INGEST_TIMEOUT_S:-10} # per ingest/replay event: fail fast to rules-only

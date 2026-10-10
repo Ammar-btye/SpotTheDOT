@@ -1,35 +1,41 @@
 flowchart LR
     subgraph client ["Clients"]
-        consoleUi["Operator Console - Next.js UI, Figma design (Figma, NextEra)"]
-        replayStreamer["SPOT Replay Streamer - kit replay.ndjson (NextEra)"]
+        consoleUi["Operator Console - Next.js :3000, Figma design (Figma, NextEra)"]
+        kitReplay["SPOT challenge kit - replay.ndjson + CSVs (NextEra)"]
     end
-    subgraph gateway ["Next.js Route Handlers"]
-        nextApi["Next.js API Routes /api"]
+    subgraph app ["Docker Compose (laptop)"]
+        backend["Backend - FastAPI :8000 /api/v1: ingest, flags, explain, forecast, ask"]
+        validator["Rules validator - policy.py, serial or parallel with Laya"]
+        orchestrator["Orchestrator - LangGraph :8085 /v1/assess, /v1/ask"]
+        mcp["MCP context server :8090 - read-only tools"]
+        system2["System 2 Analyst - FastAPI :8083 /v1/assess, checked citations"]
+        gateway["Gateway - LiteLLM :4000"]
+        vision["Vision - OCR and code readers :8084, no model"]
     end
-    subgraph service ["Services"]
-        triage["System 1 Triage - rules and stats, local"]
-        consoleApi["Console API - views, acks, debriefs"]
-        worker["System 2 Worker - escalation poller"]
-        analyst["System 2 Analyst - FastAPI and HF model on ROCm, Radeon 8060S (AMD, Hugging Face)"]
-        riskScorer["Laya Failure-Risk Scorer - amd/system1 on ROCm, Radeon 8060S (AMD, Hugging Face)"]
+    subgraph amdBox ["AMD Radeon 8060S, gfx1151, ROCm (AMD)"]
+        system1["System 1 - Laya 421M fine-tuned :8082 /v1/predict (Hugging Face)"]
+        embed["Embed - Qwen3-Embedding-0.6B :8081 (Hugging Face)"]
+        llama["llama-server :8080 - Qwen3.5-9B Q4_K_M, llama.cpp HIP (Hugging Face)"]
     end
     subgraph datastore ["Data"]
-        neon["Neon Postgres - events, flags, assessments, insights, risk scores (Neon)"]
-    end
-    subgraph external ["External Platforms"]
-        hfHub["Hugging Face Hub - open models and published dataset (Hugging Face)"]
+        db["Postgres 17 + pgvector, local or Neon - raw, public, app schemas (Neon)"]
     end
 
-    consoleUi -->|"HTTPS polling"| nextApi
-    replayStreamer -->|"POST events"| nextApi
-    nextApi -->|"Routes ingest"| triage
-    nextApi -->|"Routes console"| consoleApi
-    triage -->|"Escalates flags"| worker
-    triage -->|"Writes flags, reads risk"| neon
-    consoleApi -->|"POST v1 debrief"| analyst
-    consoleApi -->|"Reads views, writes acks"| neon
-    worker -->|"POST v1 assess"| analyst
-    worker -->|"Writes assessments"| neon
-    riskScorer -->|"Upserts risk scores"| neon
-    analyst -.->|"HF Hub: model weights"| hfHub
-    riskScorer -.->|"HF Hub: Laya base and fine-tune"| hfHub
+    kitReplay -->|"replay, POST events"| backend
+    consoleUi -.->|"not wired yet, reads kit CSVs"| backend
+    backend -->|"POST v1 predict, every event"| system1
+    backend -->|"Laya answers"| validator
+    validator -->|"flags"| db
+    backend -->|"reads, writes, logs"| db
+    backend -->|"explain, ask when ORCHESTRATOR_URL set"| orchestrator
+    backend -->|"get_flag_context"| mcp
+    backend -->|"POST v1 assess"| system2
+    orchestrator -->|"context and tools"| mcp
+    orchestrator -->|"system1, system2"| gateway
+    orchestrator -->|"POST v1 vision"| vision
+    orchestrator -->|"POST v1 assess"| system2
+    system2 -->|"system2, system2-vision"| gateway
+    gateway -->|"SSH tunnel"| llama
+    gateway -->|"system1 alias"| system1
+    mcp -->|"SQL and vector search"| db
+    mcp -->|"query embeddings"| embed

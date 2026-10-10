@@ -1,36 +1,29 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# web: SPOTlight operator console (Next.js)
 
-## Getting Started
-
-First, run the development server:
+The operator-facing UI. The system map is in `docs/ARCHITECTURE.md`.
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+cd web && npm install && npm run dev   # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Current state (2026-10-10)
+- One page, `/` (`src/app/page.tsx`): the shift-start briefing. It shows the hidden-failures headline, stat tiles, the priority queue and the battery-cliff chart.
+- The other sidebar items (Missions, Analytics, Assets, AI review, Settings) are placeholders (`src/components/shell/nav.ts`).
+- **Data comes from the kit CSVs in `data/kit/`, read on the server** (`src/lib/kit.ts`, `src/lib/analysis.ts`). The page doesn't call the backend yet.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Next: wire it to the backend
+The FastAPI backend (`backend/`, port 8000) already serves everything this page computes, plus the parts it can't compute itself:
+- the live feed (`/api/v1/events`)
+- Laya + rules flags (`/api/v1/flags`)
+- explanations (`/api/v1/flags/{id}/explain`)
+- forecasts, insights and search
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Backend CORS allows `http://localhost:3000`. Routes are listed in `backend/README.md`.
 
-## Learn More
+## Design rules (Figma track)
+- Never show status by color alone: use color + icon + word.
+- Everything works from the keyboard.
+- Text meets WCAG AA contrast.
+- Dark operator theme, with a light toggle.
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+`db/schema.sql` here is a legacy schema that nothing runs. The real schema is `db/migrations/` at the repo root.

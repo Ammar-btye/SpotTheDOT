@@ -18,9 +18,24 @@ The completion text itself is judged only by run_pipeline: finish_reason 'length
 text parses, and token counts are recorded as metadata, never used to infer validity. The recorded SRV-00 smoke
 needed 439 output tokens; the budget stays at 350 and long replies fall back rather than being assumed valid.
 No model is loaded here and nothing is wired into the live API in this phase.
+
+Images (contract backend.2): when the packet carries an image, the request goes to `vision_model` (default: the
+text model) with the OpenAI content array built by prompts.build_messages (image first, packet text last) and the
+same json_schema response_format. If the server rejects image input (llama-server without --mmproj, or a gateway
+without the vision alias: a 4xx/5xx whose body mentions images/mmproj/multimodal/vision, or a 400/404 for a
+distinct vision model), the same attempt is re-sent once text-only to the text model inside the same time budget,
+and Generation.image_used is False; an accepted image call sets it True; no image leaves it None.
+A 4xx that is really a gateway auth failure (LiteLLM answers a wrong key with 400 "No connected db.") is never read
+as an image rejection, so a bad key is not hidden behind a text-only answer.
+
+Image latency (audit A-6): an image request may use up to `image_timeout_s` (SYSTEM2_IMAGE_DEADLINE_S, default 25 s,
+instead of the text path's 15 s). The image call keeps TEXT_RESERVE_S back; when it times out (or there is less than
+MIN_IMAGE_CALL_S left for it), the same attempt is re-sent text-only in the reserved time (image_used False).
+Requests without an image behave exactly as before.
 """
 from __future__ import annotations
 
+import dataclasses
 import http.client
 import json
 import math
@@ -40,9 +55,17 @@ from .prompts import (ANSWER_CHARS, CLAIM_CHARS, FEWSHOT_COUNT, MAX_EVIDENCE, Ex
 MAX_TOKENS = 350            # GEN-03; see module docstring for the 439-token observation
 TEMPERATURE = 0
 TIMEOUT_S = 15.0            # per call; run_pipeline passes its remaining deadline, the smaller one wins
+IMAGE_TIMEOUT_S = 25.0      # per call for packets with an image (SYSTEM2_IMAGE_DEADLINE_S)
+TEXT_RESERVE_S = 8.0        # kept back from an image call for the text-only resend
+MIN_IMAGE_CALL_S = 4.0      # below this an image call is not started; the attempt goes text-only directly
 MAX_RESPONSE_BYTES = 262144  # whole HTTP body; the pipeline separately caps completion text at 64 KiB
 MAX_IDS = 8
 CHUNK = 16384
+ERROR_BODY_BYTES = 4096     # error excerpt read only to recognise an image rejection; never logged in full
+IMAGE_REJECT_STATUS = frozenset({400, 404, 413, 415, 422, 500, 501})
+IMAGE_REJECT_WORDS = ('image', 'mmproj', 'multimodal', 'multi-modal', 'vision', 'modalit')
+# LiteLLM answers a wrong gateway key with 400 "No connected db." (no virtual-key DB): an auth failure, not an image one
+AUTH_ERROR_WORDS = ('no connected db', 'no_db_connection', 'authentication', 'api key', 'api_key', 'unauthorized')
 SCHEMA_KEYWORDS = frozenset({'type', 'properties', 'required', 'additionalProperties', 'items', 'enum',
                              'minItems', 'maxItems', 'minLength', 'maxLength'})
 
@@ -127,11 +150,11 @@ def response_schema(prepared: PreparedPacket) -> dict:
 
 
 def request_body(prepared: PreparedPacket, examples: Sequence[Example], errors: Sequence[str] = (),
-                 model: Optional[str] = None, max_tokens: int = MAX_TOKENS) -> dict:
+                 model: Optional[str] = None, max_tokens: int = MAX_TOKENS, include_image: bool = True) -> dict:
     body = {}
     if model:
         body['model'] = model
-    body.update({'messages': build_messages(prepared, examples, errors), 'temperature': TEMPERATURE,
+    body.update({'messages': build_messages(prepared, examples, errors, include_image), 'temperature': TEMPERATURE,
                  'max_tokens': max_tokens, 'stream': False,
                  'response_format': {'type': 'json_schema',
                                      'json_schema': {'name': 'assessment', 'schema': response_schema(prepared)}},
@@ -140,6 +163,24 @@ def request_body(prepared: PreparedPacket, examples: Sequence[Example], errors: 
 
 
 # ── llama-server client ─────────────────────────────────────────────────────────────────────
+
+class HTTPStatusError(GenerationError):
+    """Non-2xx reply: GenerationError('http', 'status N') plus the status and a short body excerpt."""
+
+    def __init__(self, status: int, excerpt: str = ''):
+        super().__init__('http', 'status %d' % status)
+        self.status, self.excerpt = status, excerpt
+
+
+def image_rejected(exc: GenerationError, distinct_vision_model: bool) -> bool:
+    """True when an image request failed because the server/gateway cannot take images (resend text-only)."""
+    if not isinstance(exc, HTTPStatusError) or exc.status not in IMAGE_REJECT_STATUS:
+        return False
+    text = exc.excerpt.lower()
+    if any(w in text for w in AUTH_ERROR_WORDS):
+        return False
+    return any(w in text for w in IMAGE_REJECT_WORDS) or (distinct_vision_model and exc.status in (400, 404))
+
 
 def _reject_constant(name):
     raise ValueError('non-finite JSON constant %s' % name)
@@ -188,7 +229,8 @@ class LlamaGenerator:
 
     def __init__(self, url: str, model: Optional[str] = None, examples: Optional[Sequence[Example]] = None,
                  max_tokens: int = MAX_TOKENS, timeout_s: float = TIMEOUT_S,
-                 max_response_bytes: int = MAX_RESPONSE_BYTES, api_key: Optional[str] = None):
+                 max_response_bytes: int = MAX_RESPONSE_BYTES, api_key: Optional[str] = None,
+                 vision_model: Optional[str] = None, image_timeout_s: float = IMAGE_TIMEOUT_S):
         parts = urllib.parse.urlsplit(url)
         if parts.scheme not in ('http', 'https') or not parts.hostname:
             raise ValueError('llama-server URL must be http(s)://host[:port]')
@@ -201,6 +243,8 @@ class LlamaGenerator:
         self._target = parts.path.rstrip('/') + '/v1/chat/completions'
         self.model, self.max_tokens, self.timeout_s = model, max_tokens, float(timeout_s)
         self.max_response_bytes, self._api_key = max_response_bytes, api_key
+        self.vision_model = vision_model or model     # model used when the packet carries an image
+        self.image_timeout_s = float(image_timeout_s)
         self.examples = tuple(examples) if examples is not None else load_examples()
 
     def __repr__(self):  # never shows the key
@@ -218,15 +262,34 @@ class LlamaGenerator:
             chosen = select_examples(self.examples, packet, FEWSHOT_COUNT)
         except ValueError as exc:
             raise GenerationError('prompt', str(exc)) from None
-        budget = self.timeout_s if timeout_s is None else min(self.timeout_s, timeout_s)
+        cap = self.timeout_s if packet.image is None else self.image_timeout_s
+        budget = cap if timeout_s is None else min(cap, timeout_s)
         if budget <= 0:
             raise GenerationError('timeout', 'no time budget left')
-        body = json.dumps(request_body(packet, chosen, errors, self.model, self.max_tokens),
-                          ensure_ascii=False).encode('utf-8')
         headers = {'Content-Type': 'application/json'}
         if self._api_key:
             headers['Authorization'] = 'Bearer %s' % self._api_key
-        return parse_envelope(self._post(body, headers, budget), self.model)
+        if packet.image is None:
+            return parse_envelope(self._post(self._body(packet, chosen, errors, self.model, True), headers, budget),
+                                  self.model)
+        deadline = time.monotonic() + budget
+        image_budget = budget - TEXT_RESERVE_S
+        if image_budget >= MIN_IMAGE_CALL_S:
+            try:
+                data = self._post(self._body(packet, chosen, errors, self.vision_model, True), headers, image_budget)
+                return dataclasses.replace(parse_envelope(data, self.vision_model), image_used=True)
+            except GenerationError as exc:
+                if exc.kind != 'timeout' and not image_rejected(exc, self.vision_model != self.model):
+                    raise
+        left = deadline - time.monotonic()      # one text-only resend inside the same budget
+        if left <= 0:
+            raise GenerationError('timeout', 'no time left for the text-only resend')
+        data = self._post(self._body(packet, chosen, errors, self.model, False), headers, left)
+        return dataclasses.replace(parse_envelope(data, self.model), image_used=False)
+
+    def _body(self, packet, chosen, errors, model, include_image) -> bytes:
+        return json.dumps(request_body(packet, chosen, errors, model, self.max_tokens, include_image),
+                          ensure_ascii=False).encode('utf-8')
 
     def _post(self, body: bytes, headers: dict, budget: float) -> bytes:
         """POST and read the whole body within `budget` s; the watchdog shuts the socket at the deadline."""
@@ -246,7 +309,11 @@ class LlamaGenerator:
             conn.request('POST', self._target, body=body, headers=dict(headers, Connection='close'))
             resp = conn.getresponse()
             if not 200 <= resp.status < 300:
-                raise GenerationError('http', 'status %d' % resp.status)
+                try:
+                    excerpt = resp.read(ERROR_BODY_BYTES).decode('utf-8', 'replace')
+                except (OSError, http.client.HTTPException):
+                    excerpt = ''
+                raise HTTPStatusError(resp.status, excerpt)
             chunks, size = [], 0
             while True:
                 if expired.is_set() or time.monotonic() > deadline:

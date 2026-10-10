@@ -9,7 +9,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-BACKEND_CONTRACT_VERSION = "2026-10-10.backend.1"  # additive response widening kept this marker (contract doc)
+# backend.2 (additive): optional context.vision / context.ocr and top-level image_b64; response unchanged
+BACKEND_CONTRACT_VERSION = "2026-10-10.backend.2"
+# 2 MiB decoded is checked in packet.parse_image; this bound only rejects absurd strings before decoding
+IMAGE_B64_MAX_CHARS = 4 * ((2 * 1024 * 1024 + 2) // 3) + 64
 COMPLETE_PATHS = ("stub", "llm", "retry", "fallback")
 MODEL_PATHS = ("llm", "retry")
 RESERVED_MODELS = ("stub", "template")
@@ -45,6 +48,9 @@ class BackendAssessRequest(BaseModel):
     request_id: str | None = None
     event: dict[str, Any] | None = None
     reasons: list[str | None] | None = None
+    image_b64: str | None = Field(default=None, max_length=IMAGE_B64_MAX_CHARS,
+                                  description="Optional JPEG/PNG (base64, optional data-URL prefix, at most 2 MiB "
+                                              "decoded). Context for the model only; never citable evidence.")
 
 
 class BackendEvidence(BaseModel):

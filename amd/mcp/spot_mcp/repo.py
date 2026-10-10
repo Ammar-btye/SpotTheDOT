@@ -24,6 +24,25 @@ class Repo(Protocol):
     async def match_hybrid(self, vec: List[float], text: str, kinds: Optional[List[str]], asset: Optional[str],
                            location: Optional[str], mission: Optional[str], k: int) -> List[Dict[str, Any]]: ...
     async def raw_event_log(self, mission_id: str, around_ts: Optional[str], limit: int) -> List[Dict[str, Any]]: ...
+    # Graph RAG (contract §7). Each raises GraphUnavailable on a database without migration 009.
+    async def match_kg_nodes(self, vec: List[float], kinds: Optional[List[str]], k: int,
+                             min_sim: float) -> List[Dict[str, Any]]: ...
+    async def match_kg_nodes_text(self, text: str, kinds: Optional[List[str]], k: int) -> List[Dict[str, Any]]: ...
+    async def graph_neighborhood(self, seeds: Sequence[str], hops: int, rels: Optional[List[str]],
+                                 kinds: Optional[List[str]], max_nodes: int) -> List[Dict[str, Any]]: ...
+    async def kg_details(self, node_ids: Sequence[str]) -> Dict[str, List[Dict[str, Any]]]: ...
+
+
+class GraphUnavailable(RuntimeError):
+    """The knowledge graph's tables/functions are missing (a DB before migration 009) or not granted to this role."""
+
+
+# SQLSTATEs that mean "this database has no graph (yet)": undefined function/table/schema, no privilege.
+_GRAPH_MISSING = {"42883", "42P01", "3F000", "42501"}
+# Result caps (defence in depth; the service validates first).
+MAX_ENTRY_NODES = 20
+MAX_GRAPH_NODES = 60
+MAX_SEEDS = 20
 
 
 def vec_literal(vec: List[float]) -> str:
@@ -179,3 +198,50 @@ class PgRepo:
                       "ORDER BY abs(extract(epoch FROM (event_ts - %s::timestamp))), log_id LIMIT %s) x "
                       "ORDER BY event_ts, log_id", (mission_id, around_ts, limit))
         return await self.db.fetch(sql, p)
+
+    # ── Graph RAG (contract §7): the three graph functions plus one by-id lookup ───────────────────
+    async def _graph(self, sql: str, params: Sequence[Any]) -> List[Dict[str, Any]]:
+        try:
+            return await self.db.fetch(sql, params)
+        except Exception as exc:
+            if getattr(exc, "sqlstate", None) in _GRAPH_MISSING:
+                raise GraphUnavailable("knowledge graph not available in this database (%s; migration 009)"
+                                       % type(exc).__name__) from exc
+            raise
+
+    async def match_kg_nodes(self, vec, kinds, k, min_sim):
+        return await self._graph(
+            "SELECT node_id, kind, label, summary, doc_id, similarity "
+            "FROM match_kg_nodes(%s::vector, %s::text[], %s, %s::real)",
+            (vec_literal(vec), kinds, max(1, min(int(k), MAX_ENTRY_NODES)), min_sim))
+
+    async def match_kg_nodes_text(self, text, kinds, k):
+        return await self._graph(
+            "SELECT node_id, kind, label, summary, doc_id, score FROM match_kg_nodes_text(%s, %s::text[], %s)",
+            (text, kinds, max(1, min(int(k), MAX_ENTRY_NODES))))
+
+    async def graph_neighborhood(self, seeds, hops, rels, kinds, max_nodes):
+        return await self._graph(
+            "SELECT node_id, kind, label, summary, doc_id, hop, via_rel, via_node, weight, evidence "
+            "FROM graph_neighborhood(%s::text[], %s, %s::text[], %s::text[], %s)",
+            (list(seeds)[:MAX_SEEDS], max(1, min(int(hops), 3)), rels, kinds,
+             max(1, min(int(max_nodes), MAX_GRAPH_NODES))))
+
+    async def kg_details(self, node_ids):
+        """The nodes (label, kind, doc_id) and every stored edge among them (true direction, weight, props, evidence).
+        graph_neighborhood returns one row per reached node with the edge it was reached by, so edges between two
+        seeds, or between two nodes at the same hop (often the on-point statistics), never appear in it; reading
+        the induced edges here recovers them, plus the props (n/rate) the traversal doesn't return."""
+        ids = list(dict.fromkeys(node_ids))[:MAX_GRAPH_NODES + MAX_SEEDS]
+        rows = await self._graph(
+            """SELECT
+                 (SELECT coalesce(json_agg(json_build_object('node_id', n.node_id, 'kind', n.kind, 'label', n.label,
+                          'summary', n.summary, 'doc_id', n.doc_id)), '[]'::json)
+                    FROM kg_nodes n WHERE n.node_id = ANY(%s::text[])) AS nodes,
+                 (SELECT coalesce(json_agg(x), '[]'::json) FROM (
+                     SELECT e.src, e.rel, e.dst, e.weight, e.props, e.evidence FROM kg_edges e
+                      WHERE e.src = ANY(%s::text[]) AND e.dst = ANY(%s::text[])
+                      ORDER BY e.weight DESC, e.src, e.rel, e.dst LIMIT 400) x) AS edges""",
+            (ids, ids, ids))
+        row = rows[0] if rows else {}
+        return {"nodes": row.get("nodes") or [], "edges": row.get("edges") or []}

@@ -17,6 +17,7 @@ from .services.flags import FlagService
 from .services.http import Breaker
 from .services.ingest import IngestPipeline
 from .services.mcp import MCPClient
+from .services.orchestrator import OrchestratorClient
 from .services.reference import Reference
 from .services.replay import ReplayManager
 from .services.system1 import System1Client
@@ -36,6 +37,7 @@ class Services:
     embed: EmbedClient
     mcp: MCPClient
     system2: System2Client
+    orchestrator: OrchestratorClient
     pipeline: IngestPipeline
     replay: ReplayManager
     flags: FlagService
@@ -79,11 +81,15 @@ def build_services(settings: Settings, *, repo: Optional[Repo] = None,
                     settings.mcp_auth_token)
     system2 = System2Client(settings.system2_url, http, sink, settings.system2_api_key, settings.system2_timeout_s,
                             Breaker(max(cd, settings.system2_timeout_s)))
+    orchestrator = OrchestratorClient(settings.orchestrator_url, http, sink, settings.orchestrator_api_key,
+                                      settings.orchestrator_timeout_s,
+                                      Breaker(max(cd, settings.orchestrator_timeout_s)))
     pipeline = IngestPipeline(repo, ref, system1, sink, settings.triage_mode)
     replay = ReplayManager(pipeline, sink, ref.replay_path, settings.replay_speed, settings.replay_max_gap_s)
-    flags = FlagService(repo, mcp, system2, embed, sink, deadline_s=settings.request_deadline_s)
-    return Services(settings, db, logs_db, repo, sink, http, ref, system1, embed, mcp, system2, pipeline, replay,
-                    flags)
+    flags = FlagService(repo, mcp, system2, embed, sink, deadline_s=settings.request_deadline_s,
+                        orchestrator=orchestrator)
+    return Services(settings, db, logs_db, repo, sink, http, ref, system1, embed, mcp, system2, orchestrator,
+                    pipeline, replay, flags)
 
 
 def get_services(request: Request) -> Services:

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import datetime as dt
+import re
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .common import JSON, Loose, Page
 
@@ -56,11 +59,42 @@ class Explanation(Loose):
     severity_assessment: Optional[str] = None
     confidence: Optional[float] = None
     model: Optional[str] = None
-    source: Literal["system2", "template"]
+    source: Literal["system2", "system2_template", "template", "system1"]
     cached: bool = False
     fallback_reason: Optional[str] = None
     context_source: Optional[str] = None
     assessment_id: Optional[int] = None
+    orchestrator: Optional[Dict[str, Any]] = Field(
+        None, description="ORCHESTRATOR_URL set: {route, route_reasons, trace, system1, vision, elapsed_ms} when the "
+                          "orchestrator answered, else {error} when the existing path ran instead.")
+
+
+ImageKind = Literal["thermal", "gauge", "spectrogram", "acoustic_imager", "orbit_screenshot", "visual"]
+
+
+class ExplainIn(BaseModel):
+    """Optional body for POST /flags/{id}/explain: an operator inspection image, forwarded to the orchestrator."""
+    image_b64: Optional[str] = Field(None, max_length=12_000_000, description="JPEG/PNG base64, or a data: URL.")
+    image_kind: Optional[ImageKind] = None
+
+    @field_validator("image_b64")
+    @classmethod
+    def _b64(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or not v.strip():
+            return None
+        text = re.sub(r"^data:image/[A-Za-z0-9.+-]+;base64,", "", v.strip(), count=1, flags=re.IGNORECASE)
+        try:
+            if not base64.b64decode("".join(text.split()), validate=True):
+                raise ValueError
+        except (binascii.Error, ValueError):
+            raise ValueError("image_b64 is not valid base64") from None
+        return v.strip()
+
+
+class AskIn(BaseModel):
+    question: str = Field(min_length=2, max_length=2000)
+    flag_id: Optional[int] = Field(None, ge=1)
+    max_steps: Optional[int] = Field(None, ge=1, le=4)
 
 
 class AckIn(BaseModel):

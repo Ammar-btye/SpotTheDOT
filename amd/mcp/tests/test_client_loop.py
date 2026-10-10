@@ -28,7 +28,8 @@ async def test_openai_tools_conversion():
     async with Client(server()) as c:
         tools = ce.mcp_tools_to_openai((await c.list_tools()).tools)
     by = {t["function"]["name"]: t["function"] for t in tools}
-    assert len(by) == 15 and "get_flag_context" in by
+    assert len(by) == 17 and "get_flag_context" in by and {"graph_neighborhood", "search_graph"} <= set(by)
+    assert by["graph_neighborhood"]["parameters"]["required"] == ["entity"]
     p = by["get_reliability_stats"]["parameters"]
     assert "title" not in json.dumps(p)
     assert p["properties"]["group_by"]["enum"] == ["action_type", "location_id", "configuration_version", "battery_band"]

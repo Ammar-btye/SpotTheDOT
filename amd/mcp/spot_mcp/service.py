@@ -4,6 +4,8 @@ Citation ids every result carries:
   flag:<flag_id>  action:<action_id>  reading:<reading_id>  anomaly:<anomaly_id>  asset:<asset_id>
   location:<location_id>  mission:<mission_id>  note:<ack_id>  explanation:<assessment_id>  s1:<prediction_id>
   log:<log_id>  stat:<filters>  F<n> (derived facts, packet-local)  and RAG doc_ids (event:, incident:, manual:, policy:...)
+  Graph facts (contract §7) are cited by the reached node's node_id (failure_type:X, environment:Y, topic:z...) or,
+  for document-backed nodes, its doc_id; `ev` carries the edge's evidence id when there is one.
 """
 from __future__ import annotations
 
@@ -14,17 +16,22 @@ import logging
 import re
 import time
 from decimal import Decimal
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from . import domain as D
+from . import graph as G
 from .config import Settings
 from .db import LogSink, NullLogSink
 from .embed import Embedder, EmbeddingError
-from .repo import Repo
+from .repo import GraphUnavailable, Repo
 
 log = logging.getLogger(__name__)
 
 SNIPPET_CHARS = 260
+# graph walks: (hops, kind_filter, max_nodes). The packet keeps to reusable knowledge; the tools also show the
+# entity's own direct neighbours of any kind (an asset's actions and anomalies) in a small 1-hop walk.
+PACKET_WALKS = [(2, G.STRUCT_KINDS, 30), (2, G.DOC_LINK_KINDS, 12)]
+TOOL_KINDS = G.STRUCT_KINDS + G.DOC_LINK_KINDS + ["explanation"]  # vector entry points for the graph tools
 SEV_RANK = {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
 _ID_TOKEN = re.compile(r"\b(?:[A-Z]{1,6}-\d{2,4}|A\d{4}|AN\d{3}|WP\d{2}|M\d{3}|R\d{4}|E\d{5})\b")
 _NOISE_KEYS = {"synthetic", "created_at", "ingested_at", "payload", "embedding", "content_tsv"}
@@ -233,6 +240,176 @@ class ContextService:
         found = await self._retrieve(q, ["policy"], k=D.check_int("k", k, 1, 10), hybrid=True, request_id=request_id)
         out = self._search_result(q, found)
         out["policy_source"] = D.POLICY_SOURCE
+        return out
+
+    # ── Graph RAG (contract §7) ─────────────────────────────────────────────────────────────────
+    def _graph_cutoff(self) -> float:
+        g = self.s.graph_min_similarity
+        return self.s.min_similarity if g is None else g
+
+    @staticmethod
+    def _tool_walks(hops: int, k: int) -> List[Tuple[int, Optional[List[str]], int]]:
+        return [(hops, G.STRUCT_KINDS, min(max(k, 20), 40)), (hops, G.DOC_LINK_KINDS + ["explanation"], 12),
+                (1, None, 15)]
+
+    @staticmethod
+    def _graph_unavailable(exc: Exception) -> Dict[str, Any]:
+        return {"graph_unavailable": True, "facts": [], "result_count": 0,
+                "message": "Graph unavailable: %s. Use the search_* and get_* tools instead." % exc}
+
+    @staticmethod
+    def _node_item(n: Dict[str, Any], **extra) -> Dict[str, Any]:
+        nid = n["node_id"]
+        kind = n.get("kind") or G.kind_of(nid)
+        cid = G.cite_id(nid, kind, n.get("doc_id"))
+        return compact({"id": cid, "node_id": nid if nid != cid else None, "kind": kind, "label": n.get("label"),
+                        "summary": snippet(n.get("summary"), 160), **extra})
+
+    async def _graph_facts(self, seeds: Sequence[str], walks: Sequence[Tuple[int, Optional[List[str]], int]],
+                           context: Set[str], *, extra: Sequence[str] = (),
+                           drop_fk_within: Optional[Set[str]] = None, token_budget: Optional[int] = None,
+                           max_items: Optional[int] = None,
+                           caps: Optional[Dict[Tuple[int, bool], int]] = G.TIER_CAPS,
+                           fill: bool = True) -> List[Dict[str, Any]]:
+        """Neighbourhood -> oriented, labelled, ranked, de-duplicated facts. Raises GraphUnavailable.
+
+        `walks` are (hops, kind_filter, max_nodes) graph_neighborhood calls run in parallel and unioned (see
+        G.STRUCT_KINDS). `extra` nodes (the flag's environment and action type) join the node set without being
+        walked from. The facts are the stored edges among the whole set."""
+        parts = await asyncio.gather(*[self.repo.graph_neighborhood(list(seeds), h, None, kinds, n)
+                                       for h, kinds, n in walks], return_exceptions=True)
+        for p in parts:
+            if isinstance(p, BaseException):
+                raise p
+        rows = [r for part in parts for r in part]
+        details = None
+        if rows or extra:
+            try:  # every edge among the neighbourhood's nodes, with direction, props (n/rate) and seed labels
+                details = await self.repo.kg_details(list(seeds) + list(extra) +
+                                                     [r["node_id"] for r in rows if r.get("node_id")])
+            except Exception as exc:  # noqa: BLE001 - fall back to the traversal's own edges, keys as labels
+                log.info("kg_details lookup failed, using traversal edges oriented by relation kinds: %s", exc)
+        cands, nodes = G.candidates(rows, seeds, details, context, extra)
+        ranked = G.rank(cands, context, drop_fk_within)
+        return G.pack(ranked, nodes, est_tokens, token_budget=token_budget, max_items=max_items, caps=caps, fill=fill)
+
+    async def _resolve_entity(self, entity: str, request_id: Optional[str]):
+        """node_id -> exact lookup; else name/id via match_kg_nodes_text; else vector via match_kg_nodes.
+        Returns (node or None, resolved_by, alternatives, similarity, note)."""
+        kind, key = G.split_node(entity)
+        kinds = [kind] if kind else None
+        if kind:
+            det = await self.repo.kg_details([entity])
+            hit = next((n for n in det.get("nodes") or [] if n.get("node_id") == entity), None)
+            if hit:
+                return hit, "node_id", [], None, None
+        text = key if kind else entity
+        rows = [r for r in await self.repo.match_kg_nodes_text(text, kinds, 5)
+                if (_num(r.get("score")) or 0) >= self.s.graph_text_min_score]
+        alt = lambda rs: [compact({"id": r["node_id"], "label": r.get("label")}) for r in rs[1:4]]  # noqa: E731
+        if rows:
+            return rows[0], "text", alt(rows), None, None
+        try:
+            vec = (await self._embed([text], request_id))[0]
+        except EmbeddingError as exc:
+            return None, None, [], None, "no name/id match, and the vector fallback was skipped (%s)" % exc
+        rows = await self.repo.match_kg_nodes(vec, kinds or TOOL_KINDS, 4, self._graph_cutoff())
+        if rows:
+            return rows[0], "vector", alt(rows), _num(rows[0].get("similarity")), None
+        return None, None, [], None, None
+
+    async def graph_neighborhood(self, entity: str, hops: int = 2, k: int = 20,
+                                 request_id: Optional[str] = None) -> Dict[str, Any]:
+        entity = D.check_text("entity", entity, max_len=120)
+        hops = D.check_int("hops", hops, 1, 3)
+        k = D.check_int("k", k, 1, 30)
+        try:
+            node, how, alts, sim, note = await self._resolve_entity(entity, request_id)
+            if node is None:
+                out: Dict[str, Any] = {
+                    "entity": entity, "facts": [], "result_count": 0, "no_relevant_results": True,
+                    "message": "No graph node matches %r. Pass a node_id such as 'asset:HX-204', 'location:WP09' or "
+                               "'failure_type:LOCALIZATION_FAILURE', or use search_graph. Do not cite anything from "
+                               "this call." % entity}
+                if note:
+                    out["note"] = note
+                return out
+            nid = node["node_id"]
+            facts = await self._graph_facts([nid], self._tool_walks(hops, k), {nid}, max_items=k)
+        except GraphUnavailable as exc:
+            return self._graph_unavailable(exc)
+        except Exception as exc:
+            if getattr(exc, "sqlstate", None) == "57014":  # statement timeout
+                raise ValueError("the %d-hop walk from %s timed out; use hops=1 or 2" % (hops, entity)) from exc
+            raise
+        out = {"entity": self._node_item(node), "resolved_by": how, "hops": hops, "facts": facts,
+               "result_count": len(facts), "top_similarity": sim}
+        if alts:
+            out["alternatives"] = alts
+        if note:
+            out["note"] = note
+        if not facts:
+            out["message"] = "This node has no edges within %d hop(s)." % hops
+        return out
+
+    async def search_graph(self, query: str, k: int = 5, hops: int = 1,
+                           request_id: Optional[str] = None) -> Dict[str, Any]:
+        q = D.check_text("query", query)
+        k = D.check_int("k", k, 1, 10)
+        hops = D.check_int("hops", hops, 1, 3)
+
+        async def by_vector() -> List[Dict[str, Any]]:  # meaning -> knowledge nodes; exact ids come from text
+            vec = (await self._embed([q], request_id))[0]
+            return await self.repo.match_kg_nodes(vec, TOOL_KINDS, k, self._graph_cutoff())
+
+        text_rows, vec_rows = await asyncio.gather(self.repo.match_kg_nodes_text(q, None, k), by_vector(),
+                                                   return_exceptions=True)
+        for r in (text_rows, vec_rows):
+            if isinstance(r, GraphUnavailable):
+                return self._graph_unavailable(r)
+        note = None
+        if isinstance(vec_rows, EmbeddingError):
+            note, vec_rows = "vector search skipped (%s); name/id matches only" % vec_rows, []
+        for r in (text_rows, vec_rows):
+            if isinstance(r, BaseException):
+                raise r
+        # Merge the two entry lists by reciprocal rank fusion; a node found both ways ranks first.
+        entries: Dict[str, Dict[str, Any]] = {}
+        text_rows = [r for r in text_rows if (_num(r.get("score")) or 0) >= self.s.graph_text_min_score]
+        for how, rows in (("text", text_rows), ("vector", vec_rows)):
+            for i, r in enumerate(rows):
+                e = entries.setdefault(r["node_id"], {"row": r, "rrf": 0.0, "via": []})
+                e["rrf"] += 1.0 / (60 + i)
+                e["via"].append(how)
+                if how == "vector":
+                    e["sim"] = _num(r.get("similarity"))
+        top = sorted(entries.values(), key=lambda e: -e["rrf"])[:k]
+        out: Dict[str, Any] = {"query": q}
+        if not top:
+            out.update(entry_nodes=[], facts=[], result_count=0, top_similarity=None, no_relevant_results=True,
+                       message="No graph node matches by name/id or above similarity %.2f. Do not cite anything "
+                               "from this search." % self._graph_cutoff())
+            if note:
+                out["note"] = note
+            return out
+        seeds = [e["row"]["node_id"] for e in top]
+        try:
+            facts = await self._graph_facts(seeds, self._tool_walks(hops, 2 * k), set(seeds),
+                                            max_items=min(4 * k, 30))
+        except GraphUnavailable as exc:
+            return self._graph_unavailable(exc)
+        except Exception as exc:
+            if getattr(exc, "sqlstate", None) == "57014":  # statement timeout
+                raise ValueError("the %d-hop walk timed out; use hops=1 or a narrower query" % hops) from exc
+            raise
+        sims = [e["sim"] for e in top if e.get("sim") is not None]
+        out["entry_nodes"] = [self._node_item(e["row"], sim=round(e["sim"], 3) if e.get("sim") is not None else None,
+                                              match="+".join(e["via"])) for e in top]
+        out["facts"] = facts
+        out["result_count"] = len(top) + len(facts)
+        out["top_similarity"] = max(sims) if sims else None
+        if note:
+            out["note"] = note
         return out
 
     # ── SQL tools ───────────────────────────────────────────────────────────────────────────────
@@ -583,6 +760,9 @@ class ContextService:
             else:
                 got[k] = r
 
+        # Graph (no embedding needed: the seeds are exact node ids) runs while Phase B embeds.
+        graph_task = asyncio.ensure_future(self._graph_section(ctx, got, rules))
+
         # Phase B (RAG): embed all queries in one batch, search in parallel.
         qs = self._queries(ctx)
         rag: Dict[str, Dict[str, Any]] = {}
@@ -609,6 +789,7 @@ class ContextService:
                     rag[name] = r
         except EmbeddingError as exc:
             gaps.append("retrieval skipped: %s" % exc)
+        graph_items, graph_gap = await graph_task
 
         # Assemble: key facts first, question last.
         packet: Dict[str, Any] = {"packet_version": "1", "flag": self._flag_view(ctx["row"])}
@@ -631,6 +812,10 @@ class ContextService:
         if s1:
             packet["system1"] = s1
         packet["facts"] = self._facts(ctx, got, packet.get("event"))
+        if graph_items:
+            packet["graph"] = graph_items
+        if graph_gap:
+            gaps.append(graph_gap)
         for name in ("similar_incidents", "asset_history", "manual", "policy"):
             items = (rag.get(name) or {}).get("results") or []
             if name == "policy":  # exact rule docs first
@@ -672,6 +857,64 @@ class ContextService:
         packet["top_similarity"] = max(sims) if sims else None
         packet["question"] = packet.pop("question")  # the question always comes last
         return packet
+
+    @staticmethod
+    def _graph_seeds(ctx: Dict[str, Any], got: Dict[str, Any],
+                     rules: List[str]) -> Tuple[List[str], Set[str], List[str]]:
+        """Seeds: the flag's action, asset, location, failure/anomaly types and triggered rules ('<kind>:<key>').
+        Context: the seeds plus every node the flag/event sections already name (flag, mission, environment,
+        action type, this action's anomalies), used to drop restated FK facts and to rank on-point facts first.
+        Extra: the environment and action type, added to the fact node set (not walked from) so their statistics
+        (fails_more_in) always show."""
+        b = ctx.get("bundle") or {}
+        a, loc = b.get("action") or {}, b.get("location") or {}
+        seeds: List[str] = []
+
+        def add(kind: str, key: Any, to: List[str] = seeds) -> None:
+            nid = "%s:%s" % (kind, key)
+            if key and nid not in to:
+                to.append(nid)
+        add("action", ctx["action_id"])
+        add("asset", ctx["asset_id"])
+        add("location", ctx["location_id"])
+        add("failure_type", a.get("failure_type"))
+        for n in (b.get("anomalies") or [])[:2]:
+            add("anomaly_type", n.get("anomaly_type"))
+        if not ctx["action_id"]:  # mission flag: its failure types and worst anomaly stand in for the action's
+            m = got.get("mission") or {}
+            add("mission", ctx["mission_id"])
+            for ft, _ in sorted((m.get("failure_types") or {}).items(), key=lambda kv: -int(kv[1] or 0))[:2]:
+                add("failure_type", ft)
+            w = m.get("worst_anomaly") or {}
+            add("anomaly_type", w.get("anomaly_type"))
+            add("asset", w.get("asset_id"))
+        for r in rules[:4]:
+            add("policy_rule", r)
+        extra: List[str] = []
+        add("environment", loc.get("environment"), extra)
+        add("action_type", a.get("action_type"), extra)
+        known: List[str] = []
+        add("flag", ctx["flag_id"], known)
+        add("mission", ctx["mission_id"], known)
+        for n in b.get("anomalies") or []:
+            add("anomaly", n.get("anomaly_id"), known)
+        return seeds, set(seeds) | set(extra) | set(known), [x for x in extra if x not in seeds]
+
+    async def _graph_section(self, ctx: Dict[str, Any], got: Dict[str, Any],
+                             rules: List[str]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        """The packet's `graph` section: 2-hop facts around the flag, <= graph_token_budget. Never raises."""
+        seeds, context, extra = self._graph_seeds(ctx, got, rules)
+        if not seeds:
+            return [], None
+        try:
+            items = await self._graph_facts(seeds, PACKET_WALKS, context, extra=extra, drop_fk_within=context,
+                                            token_budget=self.s.graph_token_budget, fill=False)
+        except GraphUnavailable as exc:
+            return [], "graph unavailable (%s)" % exc
+        except Exception as exc:  # noqa: BLE001 - the graph is extra context; never break the packet
+            log.warning("graph section failed for flag %s: %s", ctx["flag_id"], exc)
+            return [], "graph lookup failed (%s)" % type(exc).__name__
+        return items, (None if items else "no knowledge-graph facts linked to this flag")
 
     def _s1_compact(self, preds: List[Dict[str, Any]], b: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
         latest: Dict[Tuple[str, str], Dict[str, Any]] = {}
@@ -787,24 +1030,47 @@ class ContextService:
     def _fit_budget(self, packet: Dict[str, Any]) -> Dict[str, Any]:
         budget = self.s.packet_token_budget
 
-        def size() -> int:  # citation_ids and bookkeeping are added after trimming, so count them now
-            return est_tokens(packet) + est_tokens(self._collect_ids(packet)) + 12
+        def size() -> int:  # citation_ids and bookkeeping are added after trimming, so measure the final shape
+            ids = self._collect_ids(packet)
+            return est_tokens({**packet, "citation_ids": ids, "result_count": len(ids), "top_similarity": 0.12345})
 
-        # Trim order: least decisive evidence first, never below one item per section.
-        for name, floor in (("manual", 1), ("asset_history", 1), ("policy", 1), ("similar_incidents", 2),
-                            ("asset_history", 0), ("manual", 0), ("similar_incidents", 1)):
+        def trim(name: str, floor: int) -> None:  # pop from the tail: every section is ordered best first
             while size() > budget and len(packet.get(name, [])) > floor:
                 packet[name].pop()
             if name in packet and not packet[name]:
                 packet.pop(name)
+
+        # Trim order: least decisive evidence first. flag, event, facts and the question are never trimmed.
+        # The graph section is already bounded (graph_token_budget), so RAG tails go before its tail does.
+        for name, floor in (("manual", 1), ("asset_history", 1), ("policy", 1), ("similar_incidents", 2),
+                            ("graph", 6), ("asset_history", 0), ("manual", 0), ("similar_incidents", 1)):
+            trim(name, floor)
         for n in (180, 120):
             if size() <= budget:
                 break
             for name in ("similar_incidents", "asset_history", "manual", "policy"):
                 for it in packet.get(name, []):
                     it["text"] = snippet(it.get("text"), n)
+        trim("graph", 4)
         if size() > budget and isinstance(packet.get("allowed_actions"), dict):
             packet["allowed_actions"] = list(packet["allowed_actions"])
+        trim("graph", 3)
+        if size() > budget:  # shorten explanatory prose; the rule names, answers and numbers stay
+            f = packet.get("flag") or {}
+            for r in f.get("reasons") or []:
+                if r.get("detail"):
+                    r["detail"] = snippet(r["detail"], 90)
+            for k in f.get("operator_acks") or []:
+                if k.get("note"):
+                    k["note"] = snippet(k["note"], 80)
+            for it in packet.get("system1") or []:
+                if it.get("meaning"):
+                    it["meaning"] = snippet(it["meaning"], 60)
+        for name, floor in (("policy", 0), ("system1", 3), ("similar_incidents", 0), ("graph", 2)):
+            trim(name, floor)
+        if size() > budget:
+            for it in packet.get("system1") or []:
+                it.pop("meaning", None)
         if size() > budget:
             packet.setdefault("gaps", []).append("packet is over the %d-token budget even after trimming" % budget)
         return packet

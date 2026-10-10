@@ -24,6 +24,7 @@ MIN_KEY_LEN = 16
 KEY_HEADER = "X-API-Key"
 OPEN_PATHS = frozenset({"/health"})
 CACHE_HEADER = "X-System2-Cache"
+IMAGE_HEADER = "X-System2-Image"   # used | text_only | not_used; only when the request carried an image (backend.2)
 FIXTURE_KEYS = {"name", "description", "request", "response"}
 
 Fixture = Tuple[str, AssessRequest, AssessResponse]
@@ -122,12 +123,20 @@ def create_app(api_key: Optional[str] = None, fixtures_dir: Path = FIXTURES, ass
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         if assessor is not None:
+            image = None
             try:
-                result, status = assessor.assess(body)
+                if hasattr(assessor, "assess_image"):
+                    result, status, _, image = assessor.assess_image(body)
+                else:
+                    result, status = assessor.assess(body)
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             response.headers[CACHE_HEADER] = status
+            if prepared.image is not None:
+                response.headers[IMAGE_HEADER] = image or "not_used"
             return result
+        if prepared.image is not None:     # the stub never sends anything to a model
+            response.headers[IMAGE_HEADER] = "not_used"
         result = assess_prepared_packet(prepared)
         return result.model_copy(update={"latency_ms": int((time.perf_counter() - t0) * 1000)})
 

@@ -154,8 +154,8 @@ NONFINITE_RE = re.compile(r'(?<!\w)(?:nan|inf|infinity)(?!\w)|∞', re.IGNORECAS
 IDENT_RE = re.compile(r'(?<![\w-])[^\W\d_]\w*(?:[-.]\w*\d\w*)*')
 NUMBER_RE = re.compile(r'(?<![\w.])([-+−]?)((?:\d{1,3}(?:,\d{3})+(?!\d)|\d+)(?:\.\d+)?|\.\d+)')
 _WORDS = (r'percent|per\s?cent|pct|psi|kpa|bar|dba|db|decibels?|degrees?\s?(?:celsius|fahrenheit|c|f)|deg\s?[cf]'
-          r'|celsius|fahrenheit|seconds?|secs?|minutes?|mins?|hours?|hrs?|rpm|hz|volts?|amps?|kw|mm/s|mm')
-UNIT_RE = re.compile(r'[  -]?(?:%%|°\s?[CF](?!\w)|(?i:%s)(?!\w)|[CFVAWsmh](?!\w))' % _WORDS)
+          r'|celsius|fahrenheit|seconds?|secs?|minutes?|mins?|hours?|hrs?|rpm|khz|hz|volts?|amps?|kw|mm/s|mm')
+UNIT_RE = re.compile(r'[  -]?(?:%%|°\s?[CF](?!\w)|[℃℉]|(?i:%s)(?!\w)|[CFVAWsmh](?!\w))' % _WORDS)
 ORDINAL_RE = re.compile(r'(?:st|nd|rd|th)(?!\w)')
 _UNITS_W = ('zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen '
             'seventeen eighteen nineteen twenty thirty forty fifty sixty seventy eighty ninety '
@@ -172,7 +172,7 @@ UNITS = {'%': '%', 'percent': '%', 'pct': '%', 'c': 'C', 'celsius': 'C', 'f': 'F
          'psi': 'psi', 'kpa': 'kPa', 'bar': 'bar', 'db': 'dB', 'dba': 'dB', 'decibel': 'dB', 'decibels': 'dB',
          's': 's', 'sec': 's', 'secs': 's', 'second': 's', 'seconds': 's', 'min': 'min', 'mins': 'min',
          'minute': 'min', 'minutes': 'min', 'h': 'h', 'hr': 'h', 'hrs': 'h', 'hour': 'h', 'hours': 'h',
-         'rpm': 'rpm', 'hz': 'Hz', 'v': 'V', 'volt': 'V', 'volts': 'V', 'a': 'A', 'amp': 'A', 'amps': 'A',
+         'rpm': 'rpm', 'hz': 'Hz', 'khz': 'kHz', '℃': 'C', '℉': 'F', 'v': 'V', 'volt': 'V', 'volts': 'V', 'a': 'A', 'amp': 'A', 'amps': 'A',
          'w': 'W', 'kw': 'kW', 'mm/s': 'mm/s', 'mm': 'mm', 'm': 'm'}
 KEY_UNITS = {'pct': '%', 'percent': '%', 'sec': 's', 'min': 'min', 'psi': 'psi', 'db': 'dB'}
 
